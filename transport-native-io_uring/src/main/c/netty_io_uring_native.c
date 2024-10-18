@@ -585,3 +585,139 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "sizeofMsghdr", "()I", (void *) netty_io_uring_sizeofMsghdr },
   { "msghdrOffsetofMsgName", "()I", (void *) netty_io_uring_msghdrOffsetofMsgName },
   { "msghdrOffsetofMsgNamelen", "()I", (void *) netty_io_uring_msghdrOffsetofMsgNamelen },
+  { "msghdrOffsetofMsgIov", "()I", (void *) netty_io_uring_msghdrOffsetofMsgIov },
+  { "msghdrOffsetofMsgIovlen", "()I", (void *) netty_io_uring_msghdrOffsetofMsgIovlen },
+  { "msghdrOffsetofMsgControl", "()I", (void *) netty_io_uring_msghdrOffsetofMsgControl },
+  { "msghdrOffsetofMsgControllen", "()I", (void *) netty_io_uring_msghdrOffsetofMsgControllen },
+  { "msghdrOffsetofMsgFlags", "()I", (void *) netty_io_uring_msghdrOffsetofMsgFlags },
+  { "etime", "()I", (void *) netty_io_uring_etime },
+  { "ecanceled", "()I", (void *) netty_io_uring_ecanceled },
+  { "pollin", "()I", (void *) netty_io_uring_pollin },
+  { "pollout", "()I", (void *) netty_io_uring_pollout },
+  { "pollrdhup", "()I", (void *) netty_io_uring_pollrdhup },
+  { "ioringEnterGetevents", "()I", (void *) netty_io_uring_ioringEnterGetevents },
+  { "iosqeAsync", "()I", (void *) netty_io_uring_iosqeAsync },
+  { "iosqeLink", "()I", (void *) netty_io_uring_iosqeLink },
+  { "iosqeDrain", "()I", (void *) netty_io_uring_iosqeDrain },
+  { "msgDontwait", "()I", (void *) netty_io_uring_msgDontwait },
+  { "msgFastopen", "()I", (void *) netty_io_uring_msgFastopen },
+  { "solUdp", "()I", (void *) netty_io_uring_solUdp },
+  { "udpSegment", "()I", (void *) netty_io_uring_udpSegment },
+  { "cmsghdrOffsetofCmsgLen", "()I", (void *) netty_io_uring_cmsghdrOffsetofCmsgLen },
+  { "cmsghdrOffsetofCmsgLevel", "()I", (void *) netty_io_uring_cmsghdrOffsetofCmsgLevel },
+  { "cmsghdrOffsetofCmsgType", "()I", (void *) netty_io_uring_cmsghdrOffsetofCmsgType },
+  { "tcpFastopenMode", "()I", (void *) netty_io_uring_tcpFastopenMode },
+};
+static const jint statically_referenced_fixed_method_table_size = sizeof(statically_referenced_fixed_method_table) / sizeof(statically_referenced_fixed_method_table[0]);
+
+static const JNINativeMethod method_table[] = {
+    {"ioUringSetup", "(I)[[J", (void *) netty_io_uring_setup},
+    {"ioUringProbe", "(I[I)Z", (void *) netty_io_uring_probe},
+    {"ioUringExit", "(JIJIJII)V", (void *) netty_io_uring_ring_buffer_exit},
+    {"createFile", "(Ljava/lang/String;)I", (void *) netty_create_file},
+    {"ioUringEnter", "(IIII)I", (void *) netty_io_uring_enter},
+    {"blockingEventFd", "()I", (void *) netty_epoll_native_blocking_event_fd},
+    {"eventFdWrite", "(IJ)V", (void *) netty_io_uring_eventFdWrite },
+    {"registerUnix", "()I", (void *) netty_io_uring_registerUnix },
+    {"cmsghdrData", "(J)J", (void *) netty_io_uring_cmsghdrData},
+    {"kernelVersion", "()Ljava/lang/String;", (void *) netty_io_uring_kernel_version },
+    {"getFd", "(Ljava/nio/channels/FileChannel;)I", (void *) netty_io_uring_getFd }
+};
+static const jint method_table_size =
+    sizeof(method_table) / sizeof(method_table[0]);
+// JNI Method Registration Table End
+
+static jint netty_iouring_native_JNI_OnLoad(JNIEnv* env, const char* packagePrefix) {
+    int ret = JNI_ERR;
+    int nativeRegistered = 0;
+    int staticallyRegistered = 0;
+    int linuxsocketOnLoadCalled = 0;
+
+
+    // We must register the statically referenced methods first!
+    if (netty_jni_util_register_natives(env,
+            packagePrefix,
+            STATICALLY_CLASSNAME,
+            statically_referenced_fixed_method_table,
+            statically_referenced_fixed_method_table_size) != 0) {
+        goto done;
+    }
+    nativeRegistered = 1;
+
+    if (netty_jni_util_register_natives(env, packagePrefix,
+                                       NATIVE_CLASSNAME,
+                                       method_table, method_table_size) != 0) {
+        goto done;
+    }
+    staticallyRegistered = 1;
+
+    if (netty_io_uring_linuxsocket_JNI_OnLoad(env, packagePrefix) == JNI_ERR) {
+        goto done;
+    }
+    linuxsocketOnLoadCalled = 1;
+
+    NETTY_JNI_UTIL_LOAD_CLASS(env, longArrayClass, "[J", done);
+
+    if (packagePrefix != NULL) {
+        staticPackagePrefix = strdup(packagePrefix);
+    }
+    ret = NETTY_JNI_UTIL_JNI_VERSION;
+
+    jclass fileChannelCls = NULL;
+    NETTY_JNI_UTIL_FIND_CLASS(env, fileChannelCls, "sun/nio/ch/FileChannelImpl", done);
+    NETTY_JNI_UTIL_GET_FIELD(env, fileChannelCls, fileDescriptorFieldId, "fd", "Ljava/io/FileDescriptor;", done);
+
+    jclass fileDescriptorCls = NULL;
+    NETTY_JNI_UTIL_FIND_CLASS(env, fileDescriptorCls, "java/io/FileDescriptor", done);
+    NETTY_JNI_UTIL_TRY_GET_FIELD(env, fileDescriptorCls, fdFieldId, "fd", "I");
+
+done:
+    if (ret == JNI_ERR) {
+        if (nativeRegistered == 1) {
+            netty_jni_util_unregister_natives(env, packagePrefix, NATIVE_CLASSNAME);
+        }
+        if (staticallyRegistered == 1) {
+            netty_jni_util_unregister_natives(env, packagePrefix, STATICALLY_CLASSNAME);
+        }
+        if (linuxsocketOnLoadCalled == 1) {
+            netty_io_uring_linuxsocket_JNI_OnUnLoad(env, packagePrefix);
+        }
+    }
+    return ret;
+}
+
+static void netty_iouring_native_JNI_OnUnload(JNIEnv* env) {
+    netty_jni_util_unregister_natives(env, staticPackagePrefix, NATIVE_CLASSNAME);
+    netty_jni_util_unregister_natives(env, staticPackagePrefix, STATICALLY_CLASSNAME);
+    netty_io_uring_native_JNI_OnUnLoad(env, staticPackagePrefix);
+
+    if (register_unix_called == 1) {
+        register_unix_called = 0;
+        netty_unix_unregister(env, staticPackagePrefix);
+    }
+    if (staticPackagePrefix != NULL) {
+        free((void *) staticPackagePrefix);
+        staticPackagePrefix = NULL;
+    }
+}
+
+// Invoked by the JVM when statically linked
+JNIEXPORT jint JNI_OnLoad_netty_transport_native_io_uring(JavaVM* vm, void* reserved) {
+    jint ret = netty_jni_util_JNI_OnLoad(vm, reserved, LIBRARYNAME, netty_iouring_native_JNI_OnLoad);
+    return ret;
+}
+
+// Invoked by the JVM when statically linked
+JNIEXPORT void JNI_OnUnload_netty_transport_native_io_uring(JavaVM* vm, void* reserved) {
+    netty_jni_util_JNI_OnUnload(vm, reserved, netty_iouring_native_JNI_OnUnload);
+}
+
+#ifndef NETTY_IO_URING_BUILD_STATIC
+JNIEXPORT jint JNI_OnLoad(JavaVM *vm, void *reserved) {
+    return netty_jni_util_JNI_OnLoad(vm, reserved, LIBRARYNAME, netty_iouring_native_JNI_OnLoad);
+}
+
+JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved) {
+    netty_jni_util_JNI_OnUnload(vm, reserved, netty_iouring_native_JNI_OnUnload);
+}
+#endif /* NETTY_IO_URING_BUILD_STATIC */

@@ -19,17 +19,25 @@ import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
 import io.netty.channel.unix.Errors;
 import io.netty.channel.unix.FileDescriptor;
+import io.netty.util.AbstractReferenceCounted;
+import io.netty.util.ReferenceCounted;
 import io.netty.util.collection.LongObjectHashMap;
 import io.netty.util.concurrent.DefaultPromise;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.GenericFutureListener;
 import io.netty.util.concurrent.Promise;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.io.IOException;
 import java.nio.channels.FileChannel;
 
-public class IoUringAsyncFile {
+public class IoUringAsyncFile extends AbstractReferenceCounted {
+
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(IoUringAsyncFile.class);
 
     private final FileDescriptor fileDescriptor;
+
     private final int nativeFd;
 
     private IoEventLoop ioEventLoop;
@@ -40,11 +48,14 @@ public class IoUringAsyncFile {
 
     private short opsId = Short.MIN_VALUE;
 
+    private FileChannel javaFileChannel;
+
     private final LongObjectHashMap<Promise<AsyncFileOperatorResult>> processingTask;
 
     public IoUringAsyncFile(FileChannel fileChannel) {
         this.fileDescriptor = new FileDescriptor(Native.getFd(fileChannel));
         this.nativeFd = Native.getFd(fileChannel);
+        this.javaFileChannel = fileChannel;
         this.processingTask = new LongObjectHashMap<>();
     }
 
@@ -56,8 +67,10 @@ public class IoUringAsyncFile {
         }
 
         boolean isIoEventLoop = eventLoop instanceof IoEventLoop;
-        if (!isIoEventLoop || ((IoEventLoop) eventLoop).isCompatible(InternalUnsafeHandle.class)) {
-            promise.setFailure(new IllegalStateException("incompatible event loop type: " + eventLoop.getClass().getName()));
+        if (!isIoEventLoop || !((IoEventLoop) eventLoop).isCompatible(InternalUnsafeHandle.class)) {
+            promise.setFailure(
+                    new IllegalStateException("incompatible event loop type: " + eventLoop.getClass().getName())
+            );
         }
 
         IoEventLoop ioEventLoop = (IoEventLoop) eventLoop;
@@ -83,9 +96,14 @@ public class IoUringAsyncFile {
     }
 
     public Future<AsyncFileOperatorResult> read(ByteBuf buf, int len, int offset) {
+
+        if (ioEventLoop == null) {
+            throw new IllegalStateException("register first");
+        }
+
         DefaultPromise<AsyncFileOperatorResult> promise = new DefaultPromise<>(ioEventLoop);
 
-        if(!registered) {
+        if (!registered) {
             promise.setFailure(new IllegalStateException("register first"));
         }
 
@@ -106,17 +124,21 @@ public class IoUringAsyncFile {
             });
         }
 
+        int writerIndex = buf.writerIndex();
+
         promise.addListener(new GenericFutureListener<Future<? super AsyncFileOperatorResult>>() {
             @Override
             public void operationComplete(Future<? super AsyncFileOperatorResult> future) throws Exception {
                 // release buf
                 buf.release();
+
+                if (future.isSuccess()) {
+                    buf.writerIndex(writerIndex + ((AsyncFileOperatorResult) future.getNow()).result);
+                }
             }
         });
         return promise;
     }
-
-
 
     private void read0(ByteBuf buf, int len, int offset, DefaultPromise<AsyncFileOperatorResult> promise) {
         short nextOpsId = nextOpsId();
@@ -144,10 +166,9 @@ public class IoUringAsyncFile {
     public Future<AsyncFileOperatorResult> write(ByteBuf buf, int len, int offset) {
         DefaultPromise<AsyncFileOperatorResult> promise = new DefaultPromise<>(ioEventLoop);
 
-        if(!registered) {
+        if (!registered) {
             promise.setFailure(new IllegalStateException("register first"));
         }
-
 
         if (buf.readableBytes() < len) {
             promise.setFailure(new IllegalArgumentException("buf readableBytes must greater than len!"));
@@ -164,11 +185,18 @@ public class IoUringAsyncFile {
                 }
             });
         }
+
+        int readerIndex = buf.readerIndex();
+
         promise.addListener(new GenericFutureListener<Future<? super AsyncFileOperatorResult>>() {
             @Override
             public void operationComplete(Future<? super AsyncFileOperatorResult> future) throws Exception {
                 // release buf
                 buf.release();
+
+                if (future.isSuccess()) {
+                    buf.readerIndex(readerIndex + ((AsyncFileOperatorResult) future.getNow()).result);
+                }
             }
         });
 
@@ -207,6 +235,44 @@ public class IoUringAsyncFile {
         return id;
     }
 
+    @Override
+    protected void deallocate() {
+        FileChannel file = this.javaFileChannel;
+
+        if (file == null) {
+            return;
+        }
+        this.javaFileChannel = null;
+
+        try {
+            file.close();
+        } catch (IOException e) {
+            logger.warn("Failed to close a file.", e);
+        }
+    }
+
+    @Override
+    public IoUringAsyncFile touch(Object hint) {
+        return this;
+    }
+
+    @Override
+    public IoUringAsyncFile retain() {
+         super.retain();
+         return this;
+    }
+
+    @Override
+    public IoUringAsyncFile retain(int increment) {
+        super.retain(increment);
+        return this;
+    }
+
+    @Override
+    public IoUringAsyncFile touch() {
+        return this;
+    }
+
     class InternalUnsafeHandle implements IoUringIoHandle {
 
         @Override
@@ -215,8 +281,8 @@ public class IoUringAsyncFile {
             Promise<AsyncFileOperatorResult> promise = processingTask.get(ioUringIoEvent.data());
             int res = ioUringIoEvent.res();
             if (res < 0) {
-               promise.setFailure(new Errors.NativeIoException("IoUringAsyncFileRead", -res));
-               return;
+                promise.setFailure(new Errors.NativeIoException("IoUringAsyncFileRead", -res));
+                return;
             }
 
             promise.setSuccess(new AsyncFileOperatorResult(IoUringAsyncFile.this, res));
@@ -236,7 +302,6 @@ public class IoUringAsyncFile {
         public AsyncFileOperatorResult(IoUringAsyncFile file, int result) {
             this.file = file;
             this.result = result;
-
         }
 
         public IoUringAsyncFile getFile() {
