@@ -40,7 +40,7 @@ public class IoUringAsyncFile extends AbstractReferenceCounted {
 
     private final int nativeFd;
 
-    private IoEventLoop ioEventLoop;
+    protected IoEventLoop ioEventLoop;
 
     private IoRegistration ioRegistration;
 
@@ -95,7 +95,7 @@ public class IoUringAsyncFile extends AbstractReferenceCounted {
         return promise;
     }
 
-    public Future<AsyncFileOperatorResult> read(ByteBuf buf, int len, int offset) {
+    public Future<AsyncFileOperatorResult> read(ByteBuf buf, int len, long offset) {
 
         if (!registered) {
            throw new IllegalStateException("register first");
@@ -136,7 +136,7 @@ public class IoUringAsyncFile extends AbstractReferenceCounted {
         return promise;
     }
 
-    private void read0(ByteBuf buf, int len, int offset, DefaultPromise<AsyncFileOperatorResult> promise) {
+    private void read0(ByteBuf buf, int len, long offset, DefaultPromise<AsyncFileOperatorResult> promise) {
         short nextOpsId = nextOpsId();
 
         processingTask.put(nextOpsId, promise);
@@ -159,7 +159,7 @@ public class IoUringAsyncFile extends AbstractReferenceCounted {
         }
     }
 
-    public Future<AsyncFileOperatorResult> write(ByteBuf buf, int len, int offset) {
+    public Future<AsyncFileOperatorResult> write(ByteBuf buf, int len, long offset) {
 
         if (!registered) {
             throw new IllegalStateException("register first");
@@ -200,7 +200,7 @@ public class IoUringAsyncFile extends AbstractReferenceCounted {
         return promise;
     }
 
-    private void write0(ByteBuf buf, int len, int offset, DefaultPromise<AsyncFileOperatorResult> promise) {
+    private void write0(ByteBuf buf, int len, long offset, DefaultPromise<AsyncFileOperatorResult> promise) {
         short nextOpsId = nextOpsId();
 
         processingTask.put(nextOpsId, promise);

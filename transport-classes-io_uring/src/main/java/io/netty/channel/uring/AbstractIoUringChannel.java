@@ -20,21 +20,7 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufHolder;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.Unpooled;
-import io.netty.channel.AbstractChannel;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelConfig;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelOption;
-import io.netty.channel.ChannelOutboundBuffer;
-import io.netty.channel.ChannelPromise;
-import io.netty.channel.ConnectTimeoutException;
-import io.netty.channel.EventLoop;
-import io.netty.channel.IoEvent;
-import io.netty.channel.IoEventLoop;
-import io.netty.channel.IoRegistration;
-import io.netty.channel.RecvByteBufAllocator;
-import io.netty.channel.ServerChannel;
+import io.netty.channel.*;
 import io.netty.channel.socket.ChannelInputShutdownEvent;
 import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.channel.socket.SocketChannelConfig;
@@ -1019,6 +1005,10 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
         if (msg instanceof ByteBuf) {
             ByteBuf buf = (ByteBuf) msg;
             return UnixChannelUtil.isBufferCopyNeededForWrite(buf)? newDirectBuffer(buf) : buf;
+        }
+
+        if (msg instanceof FileRegion) {
+            return msg;
         }
 
         throw new UnsupportedOperationException("unsupported message type");
