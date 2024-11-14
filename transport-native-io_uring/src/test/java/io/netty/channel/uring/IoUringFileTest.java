@@ -15,10 +15,7 @@
  */
 package io.netty.channel.uring;
 
-import io.netty.channel.EventLoopGroup;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.unix.FileDescriptor;
-import org.junit.jupiter.api.AfterAll;
+import io.netty.channel.DefaultFileRegion;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -26,20 +23,14 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.nio.channels.FileChannel;
-import java.nio.file.Files;
-import java.nio.file.StandardOpenOption;
-import java.util.UUID;
 
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class IoUringFileTest {
 
-    private static EventLoopGroup group;
-
     @BeforeAll
     public static void loadJNI() {
         assumeTrue(IoUring.isAvailable());
-        group =  new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory());
     }
 
     @Test
@@ -47,39 +38,9 @@ public class IoUringFileTest {
         File file = File.createTempFile("temp", ".tmp");
         file.deleteOnExit();
         FileChannel channel = FileChannel.open(file.toPath());
-        int fd = Native.getFd(channel);
+        DefaultFileRegion region = new DefaultFileRegion(channel, 0, channel.size());
+        int fd = Native.getFd(region);
         Assertions.assertTrue(fd > 0);
-    }
-
-    @Test
-    public void testAsyncSplice() throws Exception {
-        String sampleString = "hello netty io_uring sendFile!";
-        File inFile = File.createTempFile(UUID.randomUUID().toString(), ".tmp");
-        inFile.deleteOnExit();
-        File outFile = File.createTempFile(UUID.randomUUID().toString(), ".tmp");
-        outFile.deleteOnExit();
-        Files.write(inFile.toPath(), sampleString.getBytes());
-
-        try (
-                FileChannel inFileChannel = FileChannel.open(inFile.toPath(), StandardOpenOption.READ);
-                FileChannel outFileChannel = FileChannel.open(outFile.toPath(), StandardOpenOption.WRITE)
-        ) {
-            IoUringSendFile sendFileHandle = IoUringSendFile.newInstance(group.next())
-                    .sync().getNow();
-            Integer now = sendFileHandle.sendFile(
-                    new FileDescriptor(Native.getFd(inFileChannel)), 0,
-                    new FileDescriptor(Native.getFd(outFileChannel)), 0, sampleString.length(), 0
-            ).sync().getNow();
-
-            Assertions.assertEquals(sampleString.length(), now.intValue());
-
-            byte[] bytes = Files.readAllBytes(outFile.toPath());
-            Assertions.assertArrayEquals(sampleString.getBytes(), bytes);
-        }
-    }
-
-    @AfterAll
-    public static void closeResource() throws InterruptedException {
-        group.shutdownGracefully().sync();
+        region.release();
     }
 }

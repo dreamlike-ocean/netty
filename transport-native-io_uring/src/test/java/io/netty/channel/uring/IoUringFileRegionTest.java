@@ -34,7 +34,7 @@ import java.util.UUID;
 import java.util.concurrent.SynchronousQueue;
 
 
-public class IoUringSendFileTest {
+public class IoUringFileRegionTest {
 
     @Test
     public void testSendFile() throws IOException, InterruptedException {
@@ -63,14 +63,9 @@ public class IoUringSendFileTest {
         Bootstrap clientBoostrap = new Bootstrap();
         clientBoostrap.group(group)
                 .channel(IoUringSocketChannel.class)
-                .handler(new ChannelInboundHandlerAdapter() {
-                    @Override
-                    public void channelActive(ChannelHandlerContext ctx) throws Exception {
-                        ctx.writeAndFlush(inFile);
-                    }
-                });
+                .handler(new ChannelInboundHandlerAdapter());
         Channel clientChannel = clientBoostrap.connect(serverChannel.localAddress()).syncUninterruptibly().channel();
-        clientChannel.writeAndFlush(new DefaultFileRegion(inFile, 0, Files.size(inFile.toPath())));
+        clientChannel.writeAndFlush(new DefaultFileRegion(inFile, 0, Files.size(inFile.toPath()))).sync();
 
         byte[] result = sendFileResult.take();
         Assertions.assertArrayEquals(sampleString.getBytes(), result);

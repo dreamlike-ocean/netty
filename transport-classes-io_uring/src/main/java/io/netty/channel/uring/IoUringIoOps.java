@@ -19,7 +19,7 @@ import io.netty.channel.IoOps;
 
 /**
  * {@link IoOps} for implementation for
- * <a href="https://github.com/axboe/liburing/blob/liburing-2.6/src/include/liburing/io_uring.h">IO_uring</a>.
+ * <a href="https://github.com/axboe/liburing/blob/liburing-2.8/src/include/liburing.h">IO_uring</a>.
  */
 public final class IoUringIoOps implements IoOps {
 
@@ -49,16 +49,7 @@ public final class IoUringIoOps implements IoOps {
      */
     public IoUringIoOps(byte opcode, int flags, short ioPrio, int fd, int rwFlags, long bufferAddress,
                         int length, long offset, short data) {
-        this.opcode = opcode;
-        this.flags = flags;
-        this.ioPrio = ioPrio;
-        this.fd = fd;
-        this.rwFlags = rwFlags;
-        this.bufferAddress = bufferAddress;
-        this.length = length;
-        this.offset = offset;
-        this.data = data;
-        this.spliceFdIn = 0;
+        this(opcode, flags, ioPrio, fd, rwFlags, bufferAddress, length, offset, 0, data);
     }
 
     /**
@@ -72,11 +63,11 @@ public final class IoUringIoOps implements IoOps {
      * @param bufferAddress the bufferaddress
      * @param length        the length
      * @param offset        the offset.
+     * @param spliceFdIn    the splice_fd_in
      * @param data          the user data that will be passed back on completion.
-     * @param spliceFdIn      the splice_fd_in
      */
     public IoUringIoOps(byte opcode, int flags, short ioPrio, int fd, int rwFlags, long bufferAddress,
-                        int length, long offset, short data, int spliceFdIn) {
+                        int length, long offset, int spliceFdIn, short data) {
         this.opcode = opcode;
         this.flags = flags;
         this.ioPrio = ioPrio;
@@ -173,7 +164,7 @@ public final class IoUringIoOps implements IoOps {
     /**
      * Returns the splice_fd_in that will be used. This is specific to the opcode.
      *
-     * @return data
+     * @return  spliceFdIn
      */
     public int spliceFdIn() {
         return spliceFdIn;
@@ -191,6 +182,7 @@ public final class IoUringIoOps implements IoOps {
                 ", length=" + length +
                 ", offset=" + offset +
                 ", data=" + data +
+                ", spliceFdIn=" + spliceFdIn +
                 '}';
     }
 
@@ -414,17 +406,19 @@ public final class IoUringIoOps implements IoOps {
      * @param off_out                                   the filedescriptor offset
      * @param nbytes                                    splice bytes
      * @param splice_flags                              the flag
+     * @param data                                  the data
      * @return                                          ops.
      */
     public static IoUringIoOps newSplice(int fd_in, long off_in,
                                          int fd_out, long off_out,
                                          int nbytes,
-                                         int splice_flags) {
+                                         int splice_flags,
+                                         short data) {
         //addr and off_in are in same union
         return new IoUringIoOps(
                 Native.IORING_OP_SPLICE, 0, (short) 0,
                 fd_out, splice_flags, off_in, nbytes, off_out,
-                (short) 1, fd_in
+                fd_in, data
         );
     }
 }
