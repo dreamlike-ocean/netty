@@ -26,6 +26,7 @@ import io.netty.channel.ChannelPromise;
 import io.netty.channel.DefaultFileRegion;
 import io.netty.channel.EventLoop;
 import io.netty.channel.socket.DuplexChannel;
+import io.netty.channel.unix.FileDescriptor;
 import io.netty.channel.unix.IovArray;
 import io.netty.channel.unix.Limits;
 import io.netty.util.internal.logging.InternalLogger;
@@ -46,6 +47,8 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
     // Keep track of the ids used for write and read so we can cancel these when needed.
     private long writeId;
     private long readId;
+
+    private FileDescriptor[] pipe;
 
     AbstractIoUringStreamChannel(Channel parent, LinuxSocket socket, boolean active) {
         // Use a blocking fd, we can make use of fastpoll.
@@ -90,7 +93,25 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
 
     @Override
     protected final void doShutdownOutput() throws Exception {
-        socket.shutdown(false, true);
+       try {
+            socket.shutdown(false, true);
+       } finally {
+           if (pipe != null) {
+               for (FileDescriptor fileDescriptor : pipe) {
+                   safeClosePipe(fileDescriptor);
+               }
+           }
+       }
+    }
+
+    private static void safeClosePipe(FileDescriptor fd) {
+        if (fd != null) {
+            try {
+                fd.close();
+            } catch (IOException e) {
+                logger.warn("Error while closing a pipe", e);
+            }
+        }
     }
 
     private void shutdownInput0(final ChannelPromise promise) {
@@ -260,7 +281,10 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
             if (msg instanceof IoUringFileRegion) {
                 IoUringFileRegion fileRegion = (IoUringFileRegion) msg;
                 try {
-                    fileRegion.open();
+                    if (pipe == null) {
+                        pipe = FileDescriptor.pipe();
+                    }
+                    fileRegion.open(pipe);
                 } catch (IOException e) {
                     this.handleWriteError(e);
                     return 0;
