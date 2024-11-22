@@ -1016,14 +1016,6 @@ public abstract class AbstractChannel extends DefaultAttributeMap implements Cha
         DefaultFileRegion.validate(region, position);
     }
 
-    protected void setTransferred(DefaultFileRegion region, long transferred) {
-        DefaultFileRegion.setTransferred(region, transferred);
-    }
-
-    protected FileChannel getFileChannel(DefaultFileRegion fileRegion) {
-        return DefaultFileRegion.getFileChannel(fileRegion);
-    }
-
     static final class CloseFuture extends DefaultChannelPromise {
 
         CloseFuture(AbstractChannel ch) {

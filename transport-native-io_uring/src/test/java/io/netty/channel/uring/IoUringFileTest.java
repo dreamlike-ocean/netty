@@ -39,8 +39,11 @@ public class IoUringFileTest {
         file.deleteOnExit();
         FileChannel channel = FileChannel.open(file.toPath());
         DefaultFileRegion region = new DefaultFileRegion(channel, 0, channel.size());
-        int fd = Native.getFd(region);
-        Assertions.assertTrue(fd > 0);
-        region.release();
+        try {
+            int fd = Native.getFd(region);
+            Assertions.assertTrue(fd >= 0);
+        } finally {
+            region.release();
+        }
     }
 }

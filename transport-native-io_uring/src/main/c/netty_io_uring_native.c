@@ -197,7 +197,7 @@ static void netty_io_uring_eventFdWrite(JNIEnv* env, jclass clazz, jint fd, jlon
     netty_unix_errors_throwChannelExceptionErrorNo(env, "eventfd_write(...) failed: ", err);
 }
 
-static int netty_io_uring_getFd(JNIEnv* env, jclass clazz, jobject fileRegion) {
+static jint netty_io_uring_getFd0(JNIEnv* env, jclass clazz, jobject fileRegion) {
     jobject fileChannel = (*env)->GetObjectField(env, fileRegion, fileChannelFieldId);
     if (fileChannel == NULL) {
         netty_unix_errors_throwRuntimeException(env, "failed to get DefaultFileRegion.file");
@@ -213,6 +213,7 @@ static int netty_io_uring_getFd(JNIEnv* env, jclass clazz, jobject fileRegion) {
         netty_unix_errors_throwRuntimeException(env, "failed to get FileDescriptor.fd");
         return -1;
     }
+    return srcFd;
 }
 
 static void netty_io_uring_ring_buffer_exit(JNIEnv *env, jclass clazz,
@@ -625,7 +626,7 @@ static const JNINativeMethod method_table[] = {
     {"registerUnix", "()I", (void *) netty_io_uring_registerUnix },
     {"cmsghdrData", "(J)J", (void *) netty_io_uring_cmsghdrData},
     {"kernelVersion", "()Ljava/lang/String;", (void *) netty_io_uring_kernel_version },
-    {"getFd0", "(Ljava/lang/Object;)I", (void *) netty_io_uring_getFd }
+    {"getFd0", "(Ljava/lang/Object;)I", (void *) netty_io_uring_getFd0 }
 };
 static const jint method_table_size =
     sizeof(method_table) / sizeof(method_table[0]);
