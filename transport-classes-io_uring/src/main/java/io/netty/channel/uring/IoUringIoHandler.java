@@ -25,11 +25,13 @@ import io.netty.channel.IoRegistration;
 import io.netty.channel.unix.FileDescriptor;
 import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
+import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.StringUtil;
+import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -47,7 +49,15 @@ import static java.util.Objects.requireNonNull;
  */
 public final class IoUringIoHandler implements IoHandler {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(IoUringIoHandler.class);
+    static final int DEFAULT_PIPE_FD_POOL_SIZE = Math.max(1,
+            SystemPropertyUtil.getInt("io.netty.ioUringIoHandler.defaultPipeFdPoolSize", 5));
     private static final short RING_CLOSE = 1;
+    private static final FastThreadLocal<PipeFdPool> currentPipeFdPool = new FastThreadLocal<PipeFdPool>() {
+        @Override
+        protected PipeFdPool initialValue() throws Exception {
+            return new PipeFdPool(DEFAULT_PIPE_FD_POOL_SIZE);
+        }
+    };
 
     private final RingBuffer ringBuffer;
     private final IntObjectMap<DefaultIoUringIoRegistration> registrations;
@@ -178,6 +188,11 @@ public final class IoUringIoHandler implements IoHandler {
         submissionQueue.submitAndWait();
         completionQueue.process(this::handle);
         completeRingClose();
+        //release pipeFd resource if exists
+        PipeFdPool pipeFdPool = currentPipeFdPool.getIfExists();
+        if (pipeFdPool != null) {
+            pipeFdPool.destroy();
+        }
     }
 
     // We need to prevent the race condition where a wakeup event is submitted to a file descriptor that has
@@ -374,6 +389,10 @@ public final class IoUringIoHandler implements IoHandler {
                 remove();
             }
         }
+    }
+
+    static PipeFdPool pipeFdPool() {
+        return currentPipeFdPool.get();
     }
 
     private static IoUringIoHandle cast(IoHandle handle) {

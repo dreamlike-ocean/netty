@@ -42,7 +42,7 @@ final class IoUringFileRegion implements FileRegion {
     void open() throws IOException {
         fileRegion.open();
         if (pipe == null) {
-            pipe = FileDescriptor.pipe();
+            pipe = IoUringIoHandler.pipeFdPool().acquire();
         }
     }
 
@@ -175,8 +175,7 @@ final class IoUringFileRegion implements FileRegion {
 
     private void closePipeIfNeeded() {
         if (pipe != null) {
-            closeSilently(pipe[0]);
-            closeSilently(pipe[1]);
+            IoUringIoHandler.pipeFdPool().release(pipe);
         }
     }
 
