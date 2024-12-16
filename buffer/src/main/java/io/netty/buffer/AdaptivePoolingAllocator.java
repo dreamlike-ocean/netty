@@ -71,9 +71,11 @@ import java.util.concurrent.locks.StampedLock;
  * This allows the allocator to quickly respond to changes in the application workload,
  * without suffering undue overhead from maintaining its statistics.
  * <p>
- * Since magazines are "relatively thread-local", the allocator has a central queue that allow excess chunks from any
+ * Since magazines are "relatively thread-local"（这里的相对线程本地是通过对threadId取模打散请求的）, the allocator has a central queue that allow excess chunks from any
  * magazine, to be shared with other magazines.
  * The {@link #createSharedChunkQueue()} method can be overridden to customize this queue.
+ *
+ * 相关pr为https://github.com/netty/netty/pull/13075
  */
 @UnstableApi
 final class AdaptivePoolingAllocator {
@@ -246,6 +248,8 @@ final class AdaptivePoolingAllocator {
                     }
                 }
                 expansions++;
+                //这里的tryExpandMagazines 在free的时候会跟tryAllocate尝试抢同一个写锁
+                // 所以没有线程安全问题
             } while (expansions <= EXPANSION_ATTEMPTS && tryExpandMagazines(mags.length));
         }
 
@@ -556,6 +560,7 @@ final class AdaptivePoolingAllocator {
             }
 
             // Try to retrieve the lock and if successful allocate.
+            //这个lock保护的是current以及对应的内部状态 不保护nextInline
             long writeLock = allocationLock.tryWriteLock();
             if (writeLock != 0) {
                 try {
@@ -567,11 +572,14 @@ final class AdaptivePoolingAllocator {
             return false;
         }
 
+        //这个函数被写锁保护
         private boolean allocate(int size, int sizeBucket, int maxCapacity, AdaptiveByteBuf buf) {
             recordAllocationSize(sizeBucket);
+
             Chunk curr = current;
             if (curr != null) {
                 // We have a Chunk that has some space left.
+                // 指针碰撞快速分配
                 if (curr.remainingCapacity() > size) {
                     curr.readInitInto(buf, size, maxCapacity);
                     // We still have some bytes left that we can use for the next allocation, just early return.
@@ -586,11 +594,15 @@ final class AdaptivePoolingAllocator {
                         curr.readInitInto(buf, size, maxCapacity);
                         return true;
                     } finally {
+                        //这一块被全部分配完了 所以可以准备“释放”了
+                        // 等到这个chunk slice出来的bytebuf都release了再释放这个chunk
                         curr.release();
                     }
                 }
 
                 // Check if we either retain the chunk in the nextInLine cache or releasing it.
+                //剩下的不多了 直接释放
+                // RETIRE_CAPACITY 似乎是一页？ todo 不知道为啥是一页
                 if (curr.remainingCapacity() < RETIRE_CAPACITY) {
                     curr.release();
                 } else {
@@ -608,7 +620,17 @@ final class AdaptivePoolingAllocator {
             //
             // In any case we will store the Chunk as the current so it will be used again for the next allocation and
             // so be "reserved" by this Magazine for exclusive usage.
+            // 分配的快速路径未生效。
+            //
+            // 首先尝试获取下一个“Magazine 本地”的 Chunk（块）。如果失败，可能是因为尚未设置本地块，这时我们将从 centralQueue（中央队列）中轮询获取。如果这也失败了，我们将直接分配一个新的 Chunk。
+            // 无论如何，我们都会将这个 Chunk 存储为当前块，以便在下一次分配时重复使用，从而由该 Magazine 独占“保留”它。
+
+            //nextInLine可能是之前的current或者是当前的current（虽然被null了但是被transferToNextInLineOrRelease设置为nextline了）
+            //这里的nextInLine也可能来自于之前的chunk释放
+            //对于一个chunk的释放 默认先找到对应的magazine 设置对应的nextinline 若放不进去则进入全局队列
             if (nextInLine != null) {
+//                curr 指向当前nextInLine
+                // nextInline相当于被摘下来了
                 curr = NEXT_IN_LINE.getAndSet(this, null);
                 if (curr == MAGAZINE_FREED) {
                     // Allocation raced with a stripe-resize that freed this magazine.
@@ -616,6 +638,7 @@ final class AdaptivePoolingAllocator {
                     return false;
                 }
 
+                //直接从摘下来的nextLine分配
                 if (curr.remainingCapacity() > size) {
                     // We have a Chunk that has some space left.
                     curr.readInitInto(buf, size, maxCapacity);
@@ -636,17 +659,24 @@ final class AdaptivePoolingAllocator {
                     }
                 } else {
                     // Release it as it's too small.
+                    //释放nextInline 因为被摘下来了 所以没有竞态
                     curr.release();
                 }
             }
 
+            // 走到这里有个很简单的场景，上一个chunk全分配出去了 且没有释放 所以会导致nextinline为空
+            // 或者是摘下来的inline太小了 分配不出来
             // Now try to poll from the central queue first
             curr = parent.centralQueue.poll();
+
+            //全局队列也没有 直接找os要一段
             if (curr == null) {
                 curr = newChunkAllocation(size);
             } else {
+                //划分所有权
                 curr.attachToMagazine(this);
-
+                //这里相当于再走一次最早那个allocate逻辑
+                //若不够分配则看看是丢弃还是暂存到nextLine下来
                 if (curr.remainingCapacity() < size) {
                     // Check if we either retain the chunk in the nextInLine cache or releasing it.
                     if (curr.remainingCapacity() < RETIRE_CAPACITY) {
@@ -667,9 +697,11 @@ final class AdaptivePoolingAllocator {
                     curr.readInitInto(buf, size, maxCapacity);
                     curr = null;
                 } else {
+                    //这里就是等于的情况
                     curr.readInitInto(buf, size, maxCapacity);
                 }
             } finally {
+                //这里正好就是current分配完的场景直接摘下来 然后释放
                 if (curr != null) {
                     // Release in a finally block so even if readInitInto(...) would throw we would still correctly
                     // release the current chunk before null it out.
@@ -688,11 +720,14 @@ final class AdaptivePoolingAllocator {
         }
 
         private void transferToNextInLineOrRelease(Chunk chunk) {
+            //虽然被writeLock保护 但是因为chunk的deallocate其实也存在并发
+            // 相当于对应的chunk的释放由于bytebuf逃逸到别的线程里面释放导致的竞态
             if (NEXT_IN_LINE.compareAndSet(this, null, chunk)) {
                 return;
             }
 
             Chunk nextChunk = NEXT_IN_LINE.get(this);
+            //用较多的替换老的
             if (nextChunk != null && nextChunk != MAGAZINE_FREED
                     && chunk.remainingCapacity() > nextChunk.remainingCapacity()) {
                 if (NEXT_IN_LINE.compareAndSet(this, nextChunk, chunk)) {
@@ -704,6 +739,8 @@ final class AdaptivePoolingAllocator {
             // by some buffers and so is attached to a Magazine.
             // Once a Chunk is completely released by Chunk.release() it will try to move itself to the queue
             // as last resort.
+            //替换失败减少一个计数
+            //todo 没看懂这里release对应的是哪里的retain
             chunk.release();
         }
 
