@@ -588,6 +588,8 @@ final class AdaptivePoolingAllocator {
 
                 // At this point we know that this will be the last time current will be used, so directly set it to
                 // null and release it once we are done.
+
+                //把current摘下来了
                 current = null;
                 if (curr.remainingCapacity() == size) {
                     try {
@@ -608,6 +610,8 @@ final class AdaptivePoolingAllocator {
                 } else {
                     // See if it makes sense to transfer the Chunk to the nextInLine cache for later usage.
                     // This method will release curr if this is not the case
+                    // 如果大于RETIRE_CAPACITY就尝试放到nextInLine中
+                    //如果放入nextLine失败就释放
                     transferToNextInLineOrRelease(curr);
                 }
             }
@@ -628,9 +632,13 @@ final class AdaptivePoolingAllocator {
             //nextInLine可能是之前的current或者是当前的current（虽然被null了但是被transferToNextInLineOrRelease设置为nextline了）
             //这里的nextInLine也可能来自于之前的chunk释放
             //对于一个chunk的释放 默认先找到对应的magazine 设置对应的nextinline 若放不进去则进入全局队列
+
+            //对于在nextInLine的分配则是如果能分配出来就把这个chunk从nextInline移动到current 否则减少一个计数
             if (nextInLine != null) {
 //                curr 指向当前nextInLine
                 // nextInline相当于被摘下来了
+                //由于 设置null这个动作只会发生在这里 且被并发锁保护 所以不会出现并发问题
+                //其余地方只会cas设置一个不为空的值
                 curr = NEXT_IN_LINE.getAndSet(this, null);
                 if (curr == MAGAZINE_FREED) {
                     // Allocation raced with a stripe-resize that freed this magazine.
@@ -690,6 +698,7 @@ final class AdaptivePoolingAllocator {
                 }
             }
 
+            //curr 来于全局队列或者从os分配出来的
             current = curr;
             try {
                 assert current.remainingCapacity() >= size;
@@ -740,7 +749,7 @@ final class AdaptivePoolingAllocator {
             // Once a Chunk is completely released by Chunk.release() it will try to move itself to the queue
             // as last resort.
             //替换失败减少一个计数
-            //todo 没看懂这里release对应的是哪里的retain
+            //这里的计数来自于分配chunk时的增加
             chunk.release();
         }
 
