@@ -237,6 +237,9 @@ final class AdaptivePoolingAllocator {
                 mags = magazines;
                 int mask = mags.length - 1;
                 int index = (int) (threadId & mask);
+                //这里其实可以简单视作一个避免哈希冲突的实现
+                //使用threadId打散之后通过Integer.numberOfTrailingZeros(~mask)进行冲突后探测
+                //另外一提由于起始长度和扩容长度均满足2的次方，所以Integer.numberOfTrailingZeros(~mask)为当前的幂
                 for (int i = 0, m = Integer.numberOfTrailingZeros(~mask); i < m; i++) {
                     Magazine mag = mags[index + i & mask];
                     if (buf == null) {
@@ -271,6 +274,9 @@ final class AdaptivePoolingAllocator {
         }
         // Create a one-off chunk for this allocation.
         AbstractByteBuf innerChunk = chunkAllocator.allocate(size, maxCapacity);
+        //即使chunk分配失败也会通过分配器获取一个chunk最终挂到对应threadId取模的magazine上
+        //下面的finally也说了 这个chunk是“一次性的” pooled为false 所以虽然给了个magazine但是最终使用完就会归还给os
+        //但是会占用magazine的内存使用量
         Chunk chunk = new Chunk(innerChunk, magazine, false);
         try {
             chunk.readInitInto(buf, size, maxCapacity);
@@ -324,6 +330,7 @@ final class AdaptivePoolingAllocator {
             return true;
         }
         final Magazine[] mags;
+        //只要有一个存在扩容才行
         long writeLock = magazineExpandLock.tryWriteLock();
         if (writeLock != 0) {
             try {
@@ -561,6 +568,7 @@ final class AdaptivePoolingAllocator {
 
             // Try to retrieve the lock and if successful allocate.
             //这个lock保护的是current以及对应的内部状态 不保护nextInline
+            //如果锁定失败可能是正在扩容或者被其他线程占据了
             long writeLock = allocationLock.tryWriteLock();
             if (writeLock != 0) {
                 try {
@@ -901,6 +909,7 @@ final class AdaptivePoolingAllocator {
         }
 
         private void deallocate() {
+            //先塞nextinline再塞中央队列
             Magazine mag = magazine;
             AdaptivePoolingAllocator parent = mag.parent;
             int chunkSize = mag.preferredChunkSize();
@@ -909,6 +918,8 @@ final class AdaptivePoolingAllocator {
                 // Drop the chunk if the parent allocator is closed, or if the chunk is smaller than the
                 // preferred chunk size, or over 50% larger than the preferred chunk size.
                 detachFromMagazine();
+                //非池化或者扩容前的或者太大了
+                // 直接释放
                 delegate.release();
             } else {
                 updater.resetRefCnt(this);
