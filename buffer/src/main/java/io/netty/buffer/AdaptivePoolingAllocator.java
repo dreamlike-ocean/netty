@@ -74,17 +74,11 @@ import java.util.concurrent.locks.StampedLock;
  * Since magazines are "relatively thread-local"（这里的相对线程本地是通过对threadId取模打散请求的）, the allocator has a central queue that allow excess chunks from any
  * magazine, to be shared with other magazines.
  * The {@link #createSharedChunkQueue()} method can be overridden to customize this queue.
- *
+ * <p>
  * 相关pr为https://github.com/netty/netty/pull/13075
  */
 @UnstableApi
 final class AdaptivePoolingAllocator {
-
-    enum MagazineCaching {
-        EventLoopThreads,
-        FastThreadLocalThreads,
-        None
-    }
 
     private static final int EXPANSION_ATTEMPTS = 3;
     private static final int INITIAL_MAGAZINES = 4;
@@ -92,7 +86,6 @@ final class AdaptivePoolingAllocator {
     private static final int MIN_CHUNK_SIZE = 128 * 1024;
     private static final int MAX_STRIPES = NettyRuntime.availableProcessors() * 2;
     private static final int BUFS_PER_CHUNK = 10; // For large buffers, aim to have about this many buffers per chunk.
-
     /**
      * The maximum size of a pooled chunk, in bytes. Allocations bigger than this will never be pooled.
      * <p>
@@ -100,7 +93,6 @@ final class AdaptivePoolingAllocator {
      */
     private static final int MAX_CHUNK_SIZE =
             BUFS_PER_CHUNK * (1 << AllocationStatistics.HISTO_MAX_BUCKET_SHIFT); // 10 MiB.
-
     /**
      * The capacity if the central queue that allow chunks to be shared across magazines.
      * The default size is {@link NettyRuntime#availableProcessors()},
@@ -111,34 +103,32 @@ final class AdaptivePoolingAllocator {
      */
     private static final int CENTRAL_QUEUE_CAPACITY = Math.max(2, SystemPropertyUtil.getInt(
             "io.netty.allocator.centralQueueCapacity", NettyRuntime.availableProcessors()));
-
     /**
      * The capacity if the magazine local buffer queue. This queue just pools the outer ByteBuf instance and not
      * the actual memory and so helps to reduce GC pressure.
      */
     private static final int MAGAZINE_BUFFER_QUEUE_CAPACITY = SystemPropertyUtil.getInt(
             "io.netty.allocator.magazineBufferQueueCapacity", 1024);
-
     private static final Object NO_MAGAZINE = Boolean.TRUE;
-
-    private final ChunkAllocator chunkAllocator;
-    private final Queue<Chunk> centralQueue;
-    private final StampedLock magazineExpandLock;
-    private volatile Magazine[] magazines;
-    private final FastThreadLocal<Object> threadLocalMagazine;
-    private final Set<Magazine> liveCachedMagazines;
-    private volatile boolean freed;
 
     static {
         if (CENTRAL_QUEUE_CAPACITY < 2) {
             throw new IllegalArgumentException("CENTRAL_QUEUE_CAPACITY: " + CENTRAL_QUEUE_CAPACITY
-                    + " (expected: >= " + 2 + ')');
+                                               + " (expected: >= " + 2 + ')');
         }
         if (MAGAZINE_BUFFER_QUEUE_CAPACITY < 2) {
             throw new IllegalArgumentException("MAGAZINE_BUFFER_QUEUE_CAPACITY: " + MAGAZINE_BUFFER_QUEUE_CAPACITY
-                    + " (expected: >= " + 2 + ')');
+                                               + " (expected: >= " + 2 + ')');
         }
     }
+
+    private final ChunkAllocator chunkAllocator;
+    private final Queue<Chunk> centralQueue;
+    private final StampedLock magazineExpandLock;
+    private final FastThreadLocal<Object> threadLocalMagazine;
+    private final Set<Magazine> liveCachedMagazines;
+    private volatile Magazine[] magazines;
+    private volatile boolean freed;
 
     AdaptivePoolingAllocator(ChunkAllocator chunkAllocator, MagazineCaching magazineCaching) {
         ObjectUtil.checkNotNull(chunkAllocator, "chunkAllocator");
@@ -208,6 +198,10 @@ final class AdaptivePoolingAllocator {
      */
     private static Queue<Chunk> createSharedChunkQueue() {
         return PlatformDependent.newFixedMpmcQueue(CENTRAL_QUEUE_CAPACITY);
+    }
+
+    static int sizeBucket(int size) {
+        return AllocationStatistics.sizeBucket(size);
     }
 
     ByteBuf allocate(int size, int maxCapacity) {
@@ -293,8 +287,8 @@ final class AdaptivePoolingAllocator {
         Object tlMag;
         FastThreadLocal<Object> threadLocalMagazine = this.threadLocalMagazine;
         if (threadLocalMagazine != null &&
-                currentThread instanceof FastThreadLocalThread &&
-                (tlMag = threadLocalMagazine.get()) != NO_MAGAZINE) {
+            currentThread instanceof FastThreadLocalThread &&
+            (tlMag = threadLocalMagazine.get()) != NO_MAGAZINE) {
             return (Magazine) tlMag;
         }
         Magazine[] mags = magazines;
@@ -306,7 +300,7 @@ final class AdaptivePoolingAllocator {
      */
     void allocate(int size, int maxCapacity, AdaptiveByteBuf into) {
         AdaptiveByteBuf result = allocate(size, maxCapacity, Thread.currentThread(), into);
-        assert result == into: "Re-allocation created separate buffer instance";
+        assert result == into : "Re-allocation created separate buffer instance";
     }
 
     long usedMemory() {
@@ -396,7 +390,7 @@ final class AdaptivePoolingAllocator {
     }
 
     private void freeCentralQueue() {
-        for (;;) {
+        for (; ; ) {
             Chunk chunk = centralQueue.poll();
             if (chunk == null) {
                 break;
@@ -405,8 +399,24 @@ final class AdaptivePoolingAllocator {
         }
     }
 
-    static int sizeBucket(int size) {
-        return AllocationStatistics.sizeBucket(size);
+    enum MagazineCaching {
+        EventLoopThreads,
+        FastThreadLocalThreads,
+        None
+    }
+
+    /**
+     * The strategy for how {@link AdaptivePoolingAllocator} should allocate chunk buffers.
+     */
+    interface ChunkAllocator {
+        /**
+         * Allocate a buffer for a chunk. This can be any kind of {@link AbstractByteBuf} implementation.
+         *
+         * @param initialCapacity The initial capacity of the returned {@link AbstractByteBuf}.
+         * @param maxCapacity     The maximum capacity of the returned {@link AbstractByteBuf}.
+         * @return The buffer that represents the chunk memory.
+         */
+        AbstractByteBuf allocate(int initialCapacity, int maxCapacity);
     }
 
     @SuppressWarnings("checkstyle:finalclass") // Checkstyle mistakenly believes this class should be final.
@@ -426,25 +436,17 @@ final class AdaptivePoolingAllocator {
                 new short[HISTO_BUCKET_COUNT], new short[HISTO_BUCKET_COUNT],
                 new short[HISTO_BUCKET_COUNT], new short[HISTO_BUCKET_COUNT],
         };
-        private short[] histo = histos[0];
         private final int[] sums = new int[HISTO_BUCKET_COUNT];
-
+        protected volatile int sharedPrefChunkSize = MIN_CHUNK_SIZE;
+        protected volatile int localPrefChunkSize = MIN_CHUNK_SIZE;
+        private short[] histo = histos[0];
         private int histoIndex;
         private int datumCount;
         private int datumTarget = INIT_DATUM_TARGET;
-        protected volatile int sharedPrefChunkSize = MIN_CHUNK_SIZE;
-        protected volatile int localPrefChunkSize = MIN_CHUNK_SIZE;
 
         private AllocationStatistics(AdaptivePoolingAllocator parent, boolean shareable) {
             this.parent = parent;
             this.shareable = shareable;
-        }
-
-        protected void recordAllocationSize(int bucket) {
-            histo[bucket]++;
-            if (datumCount++ == datumTarget) {
-                rotateHistograms();
-            }
         }
 
         static int sizeBucket(int size) {
@@ -459,14 +461,39 @@ final class AdaptivePoolingAllocator {
             return Math.min(Integer.SIZE - Integer.numberOfLeadingZeros(normalizedSize), HISTO_MAX_BUCKET_MASK);
         }
 
+        protected void recordAllocationSize(int bucket) {
+            histo[bucket]++;
+            if (datumCount++ == datumTarget) {
+                rotateHistograms();
+            }
+        }
+
         private void rotateHistograms() {
+            //以下来自于pr
+//            每个 magazine 都从一个块中执行指针碰撞（使用 Buffer.split）分配。默认块大小为 128 KiB。
+// /但是，分配大小会连续记录在滑动窗口直方图中。每n次出magazine，就会根据直方图计算出 99 个百分位的分配大小，然后乘以 10。如果此值大于 128 KiB，则它将用作新的首选块大小。
+// 从那时起，小于此值或大于此值的 50% 以上的块将被停用，内存将被释放（这里指的的是chunk的deallocate））。
+//
+//The maximum size we can track in the histograms is 1 MiB, and the minimum size is 8192 bytes. The sizes are bucketed into powers of two.
+//我们可以在直方图中跟踪的最大大小为 1 MiB，最小大小为 8192 字节。大小分为 2 的幂数。
+//This keeps our memory spent on histograms low. This also means our max chunk size is 10 MiB.
+//这使我们在直方图上花费的内存较低。这也意味着我们的最大数据块大小为 10 MiB。
+//We choose 8192 as the minimum bucket size because we also choose 128 KiB as the minimum chunk size, so sizes of 8192 and smaller will have no impact on the chunk size.
+//我们选择 8192 作为最小存储桶大小，因为我们还选择 128 KiB 作为最小块大小，因此 8192 及更小的大小对块大小没有影响。
+//This in turn means we have 8 size buckets, and that allows the JIT to optimize the loops over these arrays quite well.
+//这反过来意味着我们有 8 个大小的存储桶，这使得 JIT 能够很好地优化这些数组的循环。
+//The sliding window also only keep 4 generations of histograms, and we use shorts for bucket counters since we rotate them every 1.024 to 65.534 allocations.
+//滑动窗口也只保留 4 代直方图，我们使用 shorts 作为桶计数器，因为我们每 1.024 到 65.534 次分配一次旋转一次它们。
+//Because processing the histograms is relatively expensive, we adapt the frequency of this processing depending on whether the computed chunk size changed or not.
+//由于处理直方图的成本相对较高，因此我们根据计算的块大小是否更改来调整此处理的频率。
+            //每个magazine会存在一个统计数据 统计p99的大小
             short[][] hs = histos;
             for (int i = 0; i < HISTO_BUCKET_COUNT; i++) {
                 sums[i] = (hs[0][i] & 0xFFFF) + (hs[1][i] & 0xFFFF) + (hs[2][i] & 0xFFFF) + (hs[3][i] & 0xFFFF);
             }
             int sum = 0;
             for (int count : sums) {
-                sum  += count;
+                sum += count;
             }
             int targetPercentile = (int) (sum * 0.99);
             int sizeBucket = 0;
@@ -477,15 +504,22 @@ final class AdaptivePoolingAllocator {
                 targetPercentile -= sums[sizeBucket];
             }
             int percentileSize = 1 << sizeBucket + HISTO_MIN_BUCKET_SHIFT;
+            //使用p99或者p99最左侧的数据作为chunk大小
             int prefChunkSize = Math.max(percentileSize * BUFS_PER_CHUNK, MIN_CHUNK_SIZE);
             localPrefChunkSize = prefChunkSize;
+            //如果是共享的 参考整个分配器里面的localPrefChunkSize
+            //n个不同并发单元打散的magazine的p99统计数据获取最大作为块大小 这一很容易就计算出大部分的chunk大小
+
             if (shareable) {
                 for (Magazine mag : parent.magazines) {
                     prefChunkSize = Math.max(prefChunkSize, mag.localPrefChunkSize);
                 }
             }
+
+            //sharedPrefChunkSize 就是下一次准备分配出来的chunk大小
             if (sharedPrefChunkSize != prefChunkSize) {
                 // Preferred chunk size changed. Increase check frequency.
+                //下一次计算的限额扩大两倍
                 datumTarget = Math.max(datumTarget >> 1, MIN_DATUM_TARGET);
                 sharedPrefChunkSize = prefChunkSize;
             } else {
@@ -514,11 +548,7 @@ final class AdaptivePoolingAllocator {
 
     private static final class Magazine extends AllocationStatistics {
         private static final AtomicReferenceFieldUpdater<Magazine, Chunk> NEXT_IN_LINE;
-        static {
-            NEXT_IN_LINE = AtomicReferenceFieldUpdater.newUpdater(Magazine.class, Chunk.class, "nextInLine");
-        }
         private static final Chunk MAGAZINE_FREED = new Chunk();
-
         private static final ObjectPool<AdaptiveByteBuf> EVENT_LOOP_LOCAL_BUFFER_POOL = ObjectPool.newPool(
                 new ObjectPool.ObjectCreator<AdaptiveByteBuf>() {
                     @Override
@@ -527,13 +557,17 @@ final class AdaptivePoolingAllocator {
                     }
                 });
 
-        private Chunk current;
-        @SuppressWarnings("unused") // updated via NEXT_IN_LINE
-        private volatile Chunk nextInLine;
+        static {
+            NEXT_IN_LINE = AtomicReferenceFieldUpdater.newUpdater(Magazine.class, Chunk.class, "nextInLine");
+        }
+
         private final AtomicLong usedMemory;
         private final StampedLock allocationLock;
         private final Queue<AdaptiveByteBuf> bufferQueue;
         private final ObjectPool.Handle<AdaptiveByteBuf> handle;
+        private Chunk current;
+        @SuppressWarnings("unused") // updated via NEXT_IN_LINE
+        private volatile Chunk nextInLine;
 
         Magazine(AdaptivePoolingAllocator parent) {
             this(parent, true);
@@ -746,7 +780,7 @@ final class AdaptivePoolingAllocator {
             Chunk nextChunk = NEXT_IN_LINE.get(this);
             //用较多的替换老的
             if (nextChunk != null && nextChunk != MAGAZINE_FREED
-                    && chunk.remainingCapacity() > nextChunk.remainingCapacity()) {
+                && chunk.remainingCapacity() > nextChunk.remainingCapacity()) {
                 if (NEXT_IN_LINE.compareAndSet(this, nextChunk, chunk)) {
                     nextChunk.release();
                     return;
@@ -803,29 +837,28 @@ final class AdaptivePoolingAllocator {
 
     private static final class Chunk implements ReferenceCounted {
 
-        private final AbstractByteBuf delegate;
-        private Magazine magazine;
-        private final AdaptivePoolingAllocator allocator;
-        private final int capacity;
-        private final boolean pooled;
-        private int allocatedBytes;
         private static final long REFCNT_FIELD_OFFSET =
                 ReferenceCountUpdater.getUnsafeOffset(Chunk.class, "refCnt");
         private static final AtomicIntegerFieldUpdater<Chunk> AIF_UPDATER =
                 AtomicIntegerFieldUpdater.newUpdater(Chunk.class, "refCnt");
-
         private static final ReferenceCountUpdater<Chunk> updater =
                 new ReferenceCountUpdater<Chunk>() {
                     @Override
                     protected AtomicIntegerFieldUpdater<Chunk> updater() {
                         return AIF_UPDATER;
                     }
+
                     @Override
                     protected long unsafeOffset() {
                         return REFCNT_FIELD_OFFSET;
                     }
                 };
-
+        private final AbstractByteBuf delegate;
+        private final AdaptivePoolingAllocator allocator;
+        private final int capacity;
+        private final boolean pooled;
+        private Magazine magazine;
+        private int allocatedBytes;
         // Value might not equal "real" reference count, all access should be via the updater
         @SuppressWarnings({"unused", "FieldMayBeFinal"})
         private volatile int refCnt;
@@ -848,7 +881,7 @@ final class AdaptivePoolingAllocator {
             attachToMagazine(magazine);
         }
 
-        Magazine currentMagazine()  {
+        Magazine currentMagazine() {
             return magazine;
         }
 
@@ -970,10 +1003,9 @@ final class AdaptivePoolingAllocator {
     static final class AdaptiveByteBuf extends AbstractReferenceCountedByteBuf {
 
         private final ObjectPool.Handle<AdaptiveByteBuf> handle;
-
+        Chunk chunk;
         private int adjustment;
         private AbstractByteBuf rootParent;
-        Chunk chunk;
         private int length;
         private ByteBuffer tmpNioBuf;
         private boolean hasArray;
@@ -1350,24 +1382,11 @@ final class AdaptivePoolingAllocator {
             chunk = null;
             rootParent = null;
             if (handle instanceof EnhancedHandle) {
-                EnhancedHandle<AdaptiveByteBuf>  enhancedHandle = (EnhancedHandle<AdaptiveByteBuf>) handle;
+                EnhancedHandle<AdaptiveByteBuf> enhancedHandle = (EnhancedHandle<AdaptiveByteBuf>) handle;
                 enhancedHandle.unguardedRecycle(this);
             } else {
                 handle.recycle(this);
             }
         }
-    }
-
-    /**
-     * The strategy for how {@link AdaptivePoolingAllocator} should allocate chunk buffers.
-     */
-    interface ChunkAllocator {
-        /**
-         * Allocate a buffer for a chunk. This can be any kind of {@link AbstractByteBuf} implementation.
-         * @param initialCapacity The initial capacity of the returned {@link AbstractByteBuf}.
-         * @param maxCapacity The maximum capacity of the returned {@link AbstractByteBuf}.
-         * @return The buffer that represents the chunk memory.
-         */
-        AbstractByteBuf allocate(int initialCapacity, int maxCapacity);
     }
 }
