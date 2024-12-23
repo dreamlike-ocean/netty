@@ -13,6 +13,7 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
+#include <asm-generic/int-ll64.h>
 #define _GNU_SOURCE // RTLD_DEFAULT
 #include "netty_io_uring.h"
 #include <dlfcn.h>
@@ -334,10 +335,50 @@ static jint netty_create_file(JNIEnv *env, jclass class, jstring filename) {
     return fd;
 }
 
-
 static jint netty_io_uring_registerUnix(JNIEnv* env, jclass clazz) {
     register_unix_called = 1;
     return netty_unix_register(env, staticPackagePrefix);
+}
+
+static jlong netty_io_uring_setup_buf_ring(JNIEnv* env, jclass clazz, 
+                                           int ringFd, unsigned int nentries,
+                                           short bgid, unsigned int flags) {
+    struct io_uring_buf_ring *br;
+	struct io_uring_buf_reg reg;
+	size_t ring_size;
+
+    memset(&reg, 0, sizeof(reg));
+    ring_size = nentries * sizeof(struct io_uring_buf);
+    br = mmap(NULL, ring_size, PROT_READ | PROT_WRITE,MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+    if (br == MAP_FAILED) {
+        return -errno;
+    }
+    reg.ring_addr = (__u64)br;
+    reg.ring_entries = nentries;
+    reg.bgid = bgid;
+    reg.flags |= flags;
+
+    int registerRes = sys_io_uring_register(ringFd, IORING_REGISTER_PBUF_RING, &reg, 1);
+
+    if (registerRes) {
+        munmap(br,ring_size);
+        return registerRes;
+    }
+    br->tail = 0;
+    return (jlong)br;
+}
+
+static jint netty_io_uring_free_buf_ring(JNIEnv* env, jclass clazz, 
+                                        int ringFd, struct io_uring_buf_ring *br,
+                                        unsigned int nentries, int bgid) {
+    struct io_uring_buf_reg reg = { .bgid = bgid };   
+    int registerRes = sys_io_uring_register(ringFd, IORING_UNREGISTER_PBUF_RING, &reg, 1);       
+    if (registerRes) {
+        return registerRes;
+    } 
+    size_t ring_size = nentries * sizeof(struct io_uring_buf);
+    munmap(br,ring_size);
+    return 0;
 }
 
 static jint netty_io_uring_sockNonblock(JNIEnv* env, jclass clazz) {
@@ -354,6 +395,10 @@ static jint netty_io_uring_afInet(JNIEnv* env, jclass clazz) {
 
 static jint netty_io_uring_afInet6(JNIEnv* env, jclass clazz) {
     return AF_INET6;
+}
+
+static jint netty_io_uring_pageSize(JNIEnv* env, jclass clazz) {
+    return getpagesize();
 }
 
 static jint netty_io_uring_sizeofSockaddrIn(JNIEnv* env, jclass clazz) {
@@ -466,6 +511,26 @@ static jint netty_io_uring_cmsghdrOffsetofCmsgType(JNIEnv* env, jclass clazz) {
     return offsetof(struct cmsghdr, cmsg_type);
 }
 
+static jint netty_io_uring_ioUringBufRingOffsetoftail(JNIEnv* env, jclass clazz) {
+   return offsetof(struct io_uring_buf_ring, tail);
+}
+
+static jint netty_io_uring_ioUringBufOffsetofaddr(JNIEnv* env, jclass clazz) {
+   return offsetof(struct io_uring_buf, addr);
+}
+
+static jint netty_io_uring_ioUringBufOffsetoflen(JNIEnv* env, jclass clazz) {
+    return offsetof(struct io_uring_buf, len);
+}
+
+static jint netty_io_uring_ioUringBufOffsetofbid(JNIEnv* env, jclass clazz) {
+    return offsetof(struct io_uring_buf, bid);
+}
+
+static jint netty_io_uring_sizeofIoUringBuf(JNIEnv* env, jclass clazz) {
+    return sizeof(struct io_uring_buf);
+}
+
 static jlong netty_io_uring_cmsghdrData(JNIEnv* env, jclass clazz, jlong cmsghdrAddr) {
     return (jlong) CMSG_DATA((struct cmsghdr*) cmsghdrAddr);
 }
@@ -498,6 +563,10 @@ static jint netty_io_uring_ecanceled(JNIEnv* env, jclass clazz) {
     return ECANCELED;
 }
 
+static jint netty_io_uring_enobufs(JNIEnv* env, jclass clazz) {
+    return ENOBUFS;
+}
+
 static jint netty_io_uring_pollin(JNIEnv* env, jclass clazz) {
     return POLLIN;
 }
@@ -524,6 +593,10 @@ static jint netty_io_uring_iosqeLink(JNIEnv* env, jclass clazz) {
 
 static jint netty_io_uring_iosqeDrain(JNIEnv* env, jclass clazz) {
     return IOSQE_IO_DRAIN;
+}
+
+static jint netty_io_uring_BufferSelect(JNIEnv* env, jclass clazz) {
+    return IOSQE_BUFFER_SELECT;
 }
 
 static jint netty_io_uring_msgDontwait(JNIEnv* env, jclass clazz) {
@@ -558,6 +631,7 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "afInet6", "()I", (void *) netty_io_uring_afInet6 },
   { "sizeofSockaddrIn", "()I", (void *) netty_io_uring_sizeofSockaddrIn },
   { "sizeofSockaddrIn6", "()I", (void *) netty_io_uring_sizeofSockaddrIn6 },
+  { "pageSize", "()I", (void*) netty_io_uring_pageSize},
   { "sockaddrInOffsetofSinFamily", "()I", (void *) netty_io_uring_sockaddrInOffsetofSinFamily },
   { "sockaddrInOffsetofSinPort", "()I", (void *) netty_io_uring_sockaddrInOffsetofSinPort },
   { "sockaddrInOffsetofSinAddr", "()I", (void *) netty_io_uring_sockaddrInOffsetofSinAddr },
@@ -585,6 +659,7 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "msghdrOffsetofMsgFlags", "()I", (void *) netty_io_uring_msghdrOffsetofMsgFlags },
   { "etime", "()I", (void *) netty_io_uring_etime },
   { "ecanceled", "()I", (void *) netty_io_uring_ecanceled },
+  { "enobufs", "()I", (void*) netty_io_uring_enobufs},
   { "pollin", "()I", (void *) netty_io_uring_pollin },
   { "pollout", "()I", (void *) netty_io_uring_pollout },
   { "pollrdhup", "()I", (void *) netty_io_uring_pollrdhup },
@@ -592,6 +667,7 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "iosqeAsync", "()I", (void *) netty_io_uring_iosqeAsync },
   { "iosqeLink", "()I", (void *) netty_io_uring_iosqeLink },
   { "iosqeDrain", "()I", (void *) netty_io_uring_iosqeDrain },
+  { "iosqeBufferSelect", "()I", (void *) netty_io_uring_BufferSelect },
   { "msgDontwait", "()I", (void *) netty_io_uring_msgDontwait },
   { "msgFastopen", "()I", (void *) netty_io_uring_msgFastopen },
   { "solUdp", "()I", (void *) netty_io_uring_solUdp },
@@ -599,6 +675,11 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "cmsghdrOffsetofCmsgLen", "()I", (void *) netty_io_uring_cmsghdrOffsetofCmsgLen },
   { "cmsghdrOffsetofCmsgLevel", "()I", (void *) netty_io_uring_cmsghdrOffsetofCmsgLevel },
   { "cmsghdrOffsetofCmsgType", "()I", (void *) netty_io_uring_cmsghdrOffsetofCmsgType },
+  { "ioUringBufferRingOffsetTail", "()I", (void *) netty_io_uring_ioUringBufRingOffsetoftail },
+  { "sizeofIoUringBuf", "()I", (void *) netty_io_uring_sizeofIoUringBuf },
+  { "ioUringBufferOffsetAddr", "()I", (void *) netty_io_uring_ioUringBufOffsetofaddr },
+  { "ioUringBufferOffsetLen", "()I", (void *) netty_io_uring_ioUringBufOffsetoflen },
+  { "ioUringBufferOffsetBid", "()I", (void *) netty_io_uring_ioUringBufOffsetofbid },
   { "tcpFastopenMode", "()I", (void *) netty_io_uring_tcpFastopenMode },
 };
 static const jint statically_referenced_fixed_method_table_size = sizeof(statically_referenced_fixed_method_table) / sizeof(statically_referenced_fixed_method_table[0]);
@@ -614,7 +695,9 @@ static const JNINativeMethod method_table[] = {
     {"registerUnix", "()I", (void *) netty_io_uring_registerUnix },
     {"cmsghdrData", "(J)J", (void *) netty_io_uring_cmsghdrData},
     {"kernelVersion", "()Ljava/lang/String;", (void *) netty_io_uring_kernel_version },
-    {"getFd0", "(Ljava/lang/Object;)I", (void *) netty_io_uring_getFd0 }
+    {"getFd0", "(Ljava/lang/Object;)I", (void *) netty_io_uring_getFd0 },
+    {"ioUringSetupBufRing", "(IISI)J", (void *) netty_io_uring_setup_buf_ring},
+    {"ioUringFreeBufRing", "(IJII)I", (void *) netty_io_uring_free_buf_ring}                                
 };
 static const jint method_table_size =
     sizeof(method_table) / sizeof(method_table[0]);

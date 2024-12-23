@@ -26,10 +26,12 @@ public final class IoUring {
     private static final Throwable UNAVAILABILITY_CAUSE;
     private static final boolean IORING_CQE_F_SOCK_NONEMPTY_SUPPORTED;
     private static final boolean IORING_SPLICE_SUPPORTED;
+    private static final boolean IO_URING_BUFFER_RING_SUPPORTED;
     static {
         Throwable cause = null;
         boolean socketNonEmptySupported = false;
         boolean spliceSupported = false;
+        boolean ioRingBufferRingSupported = false;
         try {
             if (SystemPropertyUtil.getBoolean("io.netty.transport.noNative", false)) {
                 cause = new UnsupportedOperationException(
@@ -45,6 +47,7 @@ public final class IoUring {
                         Native.checkAllIOSupported(ringBuffer.fd());
                         socketNonEmptySupported = Native.isIOUringCqeFSockNonEmptySupported(ringBuffer.fd());
                         spliceSupported = Native.isIOUringSupportSplice(ringBuffer.fd());
+                        ioRingBufferRingSupported = Native.checkKernelVersion(kernelVersion, 5, 19);
                     } finally {
                         if (ringBuffer != null) {
                             try {
@@ -69,6 +72,7 @@ public final class IoUring {
                 logger.debug("IoUring support is not available: {}", cause.getMessage());
             }
         }
+        IO_URING_BUFFER_RING_SUPPORTED = ioRingBufferRingSupported;
         UNAVAILABILITY_CAUSE = cause;
         IORING_CQE_F_SOCK_NONEMPTY_SUPPORTED = socketNonEmptySupported;
         IORING_SPLICE_SUPPORTED = spliceSupported;
@@ -104,6 +108,10 @@ public final class IoUring {
 
     static boolean isIOUringSpliceSupported() {
         return IORING_SPLICE_SUPPORTED;
+    }
+
+    static boolean isIORingBufferRingSupported() {
+        return IO_URING_BUFFER_RING_SUPPORTED;
     }
 
     public static void ensureAvailability() {

@@ -28,12 +28,21 @@ import io.netty.util.internal.PlatformDependent;
 import java.io.IOException;
 import java.util.Map;
 
-import static io.netty.channel.ChannelOption.*;
+import static io.netty.channel.ChannelOption.ALLOW_HALF_CLOSURE;
+import static io.netty.channel.ChannelOption.IP_TOS;
+import static io.netty.channel.ChannelOption.SO_KEEPALIVE;
+import static io.netty.channel.ChannelOption.SO_LINGER;
+import static io.netty.channel.ChannelOption.SO_RCVBUF;
+import static io.netty.channel.ChannelOption.SO_REUSEADDR;
+import static io.netty.channel.ChannelOption.SO_SNDBUF;
+import static io.netty.channel.ChannelOption.TCP_NODELAY;
 
 
 final class IOUringSocketChannelConfig extends IOUringChannelConfig implements SocketChannelConfig {
     private volatile boolean allowHalfClosure;
     private volatile boolean tcpFastopen;
+    private volatile boolean enableProviderBufferRead;
+    private volatile BufferRingConfig bufferRingConfig = BufferRingConfig.DEFAULT_BUFFER_RING_CONFIG;
 
     IOUringSocketChannelConfig(Channel channel) {
         super(channel);
@@ -107,6 +116,14 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
         if (option == ChannelOption.TCP_FASTOPEN_CONNECT) {
             return (T) Boolean.valueOf(isTcpFastOpenConnect());
         }
+
+        if (option == IoUringChannelOption.ENABLE_PROVIDER_BUFFER_READ) {
+            return (T) Boolean.valueOf(isEnableProviderBufferRead());
+        }
+
+        if (option == IoUringChannelOption.IOURING_BUFFER_RING_CONFIG) {
+            return (T) getBufferRingConfig();
+        }
         return super.getOption(option);
     }
 
@@ -148,6 +165,10 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
             setTcpQuickAck((Boolean) value);
         } else if (option == ChannelOption.TCP_FASTOPEN_CONNECT) {
             setTcpFastOpenConnect((Boolean) value);
+        } else if (option == IoUringChannelOption.ENABLE_PROVIDER_BUFFER_READ) {
+            setEnableProviderBufferRead((Boolean) value);
+        } else if (option == IoUringChannelOption.IOURING_BUFFER_RING_CONFIG) {
+            setBufferRingConfig((BufferRingConfig) value);
         } else {
             return super.setOption(option, value);
         }
@@ -165,9 +186,29 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     @Override
+    public IOUringSocketChannelConfig setSendBufferSize(int sendBufferSize) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setSendBufferSize(sendBufferSize);
+            return this;
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    @Override
     public int getSoLinger() {
         try {
             return ((IoUringSocketChannel) channel).socket.getSoLinger();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    @Override
+    public IOUringSocketChannelConfig setSoLinger(int soLinger) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setSoLinger(soLinger);
+            return this;
         } catch (IOException e) {
             throw new ChannelException(e);
         }
@@ -183,9 +224,29 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     @Override
+    public IOUringSocketChannelConfig setTrafficClass(int trafficClass) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setTrafficClass(trafficClass);
+            return this;
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    @Override
     public boolean isKeepAlive() {
         try {
             return ((IoUringSocketChannel) channel).socket.isKeepAlive();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    @Override
+    public IOUringSocketChannelConfig setKeepAlive(boolean keepAlive) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setKeepAlive(keepAlive);
+            return this;
         } catch (IOException e) {
             throw new ChannelException(e);
         }
@@ -201,9 +262,29 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     @Override
+    public IOUringSocketChannelConfig setReuseAddress(boolean reuseAddress) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setReuseAddress(reuseAddress);
+            return this;
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    @Override
     public boolean isTcpNoDelay() {
         try {
             return ((IoUringSocketChannel) channel).socket.isTcpNoDelay();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    @Override
+    public IOUringSocketChannelConfig setTcpNoDelay(boolean tcpNoDelay) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setTcpNoDelay(tcpNoDelay);
+            return this;
         } catch (IOException e) {
             throw new ChannelException(e);
         }
@@ -221,11 +302,35 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     /**
+     * Set the {@code TCP_CORK} option on the socket. See {@code man 7 tcp} for more details.
+     */
+    public IOUringSocketChannelConfig setTcpCork(boolean tcpCork) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setTcpCork(tcpCork);
+            return this;
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
      * Get the {@code SO_BUSY_POLL} option on the socket. See {@code man 7 tcp} for more details.
      */
     public int getSoBusyPoll() {
         try {
             return ((IoUringSocketChannel) channel).socket.getSoBusyPoll();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
+     * Set the {@code SO_BUSY_POLL} option on the socket. See {@code man 7 tcp} for more details.
+     */
+    public IOUringSocketChannelConfig setSoBusyPoll(int loopMicros) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setSoBusyPoll(loopMicros);
+            return this;
         } catch (IOException e) {
             throw new ChannelException(e);
         }
@@ -245,149 +350,6 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     /**
-     * Get the {@code TCP_KEEPIDLE} option on the socket. See {@code man 7 tcp} for more details.
-     */
-    public int getTcpKeepIdle() {
-        try {
-            return ((IoUringSocketChannel) channel).socket.getTcpKeepIdle();
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    /**
-     * Get the {@code TCP_KEEPINTVL} option on the socket. See {@code man 7 tcp} for more details.
-     */
-    public int getTcpKeepIntvl() {
-        try {
-            return ((IoUringSocketChannel) channel).socket.getTcpKeepIntvl();
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    /**
-     * Get the {@code TCP_KEEPCNT} option on the socket. See {@code man 7 tcp} for more details.
-     */
-    public int getTcpKeepCnt() {
-        try {
-            return ((IoUringSocketChannel) channel).socket.getTcpKeepCnt();
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    /**
-     * Get the {@code TCP_USER_TIMEOUT} option on the socket. See {@code man 7 tcp} for more details.
-     */
-    public int getTcpUserTimeout() {
-        try {
-            return ((IoUringSocketChannel) channel).socket.getTcpUserTimeout();
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    @Override
-    public IOUringSocketChannelConfig setKeepAlive(boolean keepAlive) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setKeepAlive(keepAlive);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    @Override
-    public IOUringSocketChannelConfig setPerformancePreferences(
-            int connectionTime, int latency, int bandwidth) {
-        return this;
-    }
-
-    @Override
-    public IOUringSocketChannelConfig setReceiveBufferSize(int receiveBufferSize) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setReceiveBufferSize(receiveBufferSize);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    @Override
-    public IOUringSocketChannelConfig setReuseAddress(boolean reuseAddress) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setReuseAddress(reuseAddress);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    @Override
-    public IOUringSocketChannelConfig setSendBufferSize(int sendBufferSize) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setSendBufferSize(sendBufferSize);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    @Override
-    public int getReceiveBufferSize() {
-        try {
-            return ((IoUringSocketChannel) channel).socket.getReceiveBufferSize();
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    @Override
-    public IOUringSocketChannelConfig setSoLinger(int soLinger) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setSoLinger(soLinger);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    @Override
-    public IOUringSocketChannelConfig setTcpNoDelay(boolean tcpNoDelay) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setTcpNoDelay(tcpNoDelay);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    /**
-     * Set the {@code TCP_CORK} option on the socket. See {@code man 7 tcp} for more details.
-     */
-    public IOUringSocketChannelConfig setTcpCork(boolean tcpCork) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setTcpCork(tcpCork);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    /**
-     * Set the {@code SO_BUSY_POLL} option on the socket. See {@code man 7 tcp} for more details.
-     */
-    public IOUringSocketChannelConfig setSoBusyPoll(int loopMicros) {
-        try {
-            ((IoUringSocketChannel) channel).socket.setSoBusyPoll(loopMicros);
-            return this;
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
-    }
-
-    /**
      * Set the {@code TCP_NOTSENT_LOWAT} option on the socket. See {@code man 7 tcp} for more details.
      *
      * @param tcpNotSentLowAt is a uint32_t
@@ -401,11 +363,12 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
         }
     }
 
-    @Override
-    public IOUringSocketChannelConfig setTrafficClass(int trafficClass) {
+    /**
+     * Get the {@code TCP_KEEPIDLE} option on the socket. See {@code man 7 tcp} for more details.
+     */
+    public int getTcpKeepIdle() {
         try {
-            ((IoUringSocketChannel) channel).socket.setTrafficClass(trafficClass);
-            return this;
+            return ((IoUringSocketChannel) channel).socket.getTcpKeepIdle();
         } catch (IOException e) {
             throw new ChannelException(e);
         }
@@ -424,6 +387,17 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     /**
+     * Get the {@code TCP_KEEPINTVL} option on the socket. See {@code man 7 tcp} for more details.
+     */
+    public int getTcpKeepIntvl() {
+        try {
+            return ((IoUringSocketChannel) channel).socket.getTcpKeepIntvl();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
      * Set the {@code TCP_KEEPINTVL} option on the socket. See {@code man 7 tcp} for more details.
      */
     public IOUringSocketChannelConfig setTcpKeepIntvl(int seconds) {
@@ -436,11 +410,14 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     /**
-     * @deprecated use {@link #setTcpKeepCnt(int)}
+     * Get the {@code TCP_KEEPCNT} option on the socket. See {@code man 7 tcp} for more details.
      */
-    @Deprecated
-    public IOUringSocketChannelConfig setTcpKeepCntl(int probes) {
-        return setTcpKeepCnt(probes);
+    public int getTcpKeepCnt() {
+        try {
+            return ((IoUringSocketChannel) channel).socket.getTcpKeepCnt();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
     }
 
     /**
@@ -456,6 +433,17 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     /**
+     * Get the {@code TCP_USER_TIMEOUT} option on the socket. See {@code man 7 tcp} for more details.
+     */
+    public int getTcpUserTimeout() {
+        try {
+            return ((IoUringSocketChannel) channel).socket.getTcpUserTimeout();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
      * Set the {@code TCP_USER_TIMEOUT} option on the socket. See {@code man 7 tcp} for more details.
      */
     public IOUringSocketChannelConfig setTcpUserTimeout(int milliseconds) {
@@ -465,6 +453,39 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
         } catch (IOException e) {
             throw new ChannelException(e);
         }
+    }
+
+    @Override
+    public IOUringSocketChannelConfig setPerformancePreferences(
+            int connectionTime, int latency, int bandwidth) {
+        return this;
+    }
+
+    @Override
+    public int getReceiveBufferSize() {
+        try {
+            return ((IoUringSocketChannel) channel).socket.getReceiveBufferSize();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    @Override
+    public IOUringSocketChannelConfig setReceiveBufferSize(int receiveBufferSize) {
+        try {
+            ((IoUringSocketChannel) channel).socket.setReceiveBufferSize(receiveBufferSize);
+            return this;
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
+     * @deprecated use {@link #setTcpKeepCnt(int)}
+     */
+    @Deprecated
+    public IOUringSocketChannelConfig setTcpKeepCntl(int probes) {
+        return setTcpKeepCnt(probes);
     }
 
     /**
@@ -507,6 +528,18 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
 //    }
 
     /**
+     * Returns {@code true} if <a href="https://linux.die.net/man/7/tcp">TCP_QUICKACK</a> is enabled, {@code false}
+     * otherwise.
+     */
+    public boolean isTcpQuickAck() {
+        try {
+            return ((IoUringSocketChannel) channel).socket.isTcpQuickAck();
+        } catch (IOException e) {
+            throw new ChannelException(e);
+        }
+    }
+
+    /**
      * Set the {@code TCP_QUICKACK} option on the socket. See <a href="https://linux.die.net/man/7/tcp">TCP_QUICKACK</a>
      * for more details.
      */
@@ -520,15 +553,10 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     }
 
     /**
-     * Returns {@code true} if <a href="https://linux.die.net/man/7/tcp">TCP_QUICKACK</a> is enabled, {@code false}
-     * otherwise.
+     * Returns {@code true} if {@code TCP_FASTOPEN_CONNECT} is enabled, {@code false} otherwise.
      */
-    public boolean isTcpQuickAck() {
-        try {
-            return ((IoUringSocketChannel) channel).socket.isTcpQuickAck();
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
+    public boolean isTcpFastOpenConnect() {
+        return tcpFastopen;
     }
 
     /**
@@ -537,13 +565,6 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
     public IOUringSocketChannelConfig setTcpFastOpenConnect(boolean fastOpenConnect) {
         this.tcpFastopen = fastOpenConnect;
         return this;
-    }
-
-    /**
-     * Returns {@code true} if {@code TCP_FASTOPEN_CONNECT} is enabled, {@code false} otherwise.
-     */
-    public boolean isTcpFastOpenConnect() {
-        return tcpFastopen;
     }
 
     @Override
@@ -625,4 +646,43 @@ final class IOUringSocketChannelConfig extends IOUringChannelConfig implements S
         super.setMessageSizeEstimator(estimator);
         return this;
     }
+
+    /**
+     * Returns {@code true}
+     * if <a href="https://man7.org/linux/man-pages/man3/io_uring_setup_buf_ring.3.html">Provider Buffer Read</a>
+     * is enabled, {@code false}
+     * otherwise.
+     */
+    public boolean isEnableProviderBufferRead() {
+        return enableProviderBufferRead;
+    }
+
+    /**
+     * enable provider buffer, See this <a href="https://lwn.net/Articles/815491/">LWN article</a> for more info
+     */
+    public IOUringSocketChannelConfig setEnableProviderBufferRead(boolean enableProviderBufferRead) {
+        this.enableProviderBufferRead = enableProviderBufferRead;
+        return this;
+    }
+
+    /**
+     * Returns the buffer ring config.
+     *
+     * @return the buffer ring config.
+     */
+    public BufferRingConfig getBufferRingConfig() {
+        return bufferRingConfig;
+    }
+
+    /**
+     * Set the buffer ring config.
+     *
+     * @param bufferRingConfig
+     * @return
+     */
+    public IOUringSocketChannelConfig setBufferRingConfig(BufferRingConfig bufferRingConfig) {
+        this.bufferRingConfig = bufferRingConfig;
+        return this;
+    }
+
 }

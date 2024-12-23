@@ -15,6 +15,7 @@
  */
 package io.netty.channel.uring;
 
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.IoEventLoop;
 import io.netty.channel.IoExecutionContext;
 import io.netty.channel.IoHandle;
@@ -22,6 +23,7 @@ import io.netty.channel.IoHandler;
 import io.netty.channel.IoHandlerFactory;
 import io.netty.channel.IoOps;
 import io.netty.channel.IoRegistration;
+import io.netty.channel.unix.Errors;
 import io.netty.channel.unix.FileDescriptor;
 import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
@@ -36,6 +38,7 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,6 +54,7 @@ public final class IoUringIoHandler implements IoHandler {
 
     private final RingBuffer ringBuffer;
     private final IntObjectMap<DefaultIoUringIoRegistration> registrations;
+    private final IntObjectMap<IoUringBufferRing> registeredIoUringBufferRing;
     // The maximum number of bytes for an InetAddress / Inet6Address
     private final byte[] inet4AddressArray = new byte[SockaddrIn.IPV4_ADDRESS_LENGTH];
     private final byte[] inet6AddressArray = new byte[SockaddrIn.IPV6_ADDRESS_LENGTH];
@@ -58,6 +62,8 @@ public final class IoUringIoHandler implements IoHandler {
     private final AtomicBoolean eventfdAsyncNotify = new AtomicBoolean();
     private final FileDescriptor eventfd;
     private final long eventfdReadBuf;
+
+    private final Queue<Runnable> beforeIOHook;
 
     private long eventfdReadSubmitted;
     private boolean eventFdClosing;
@@ -75,12 +81,21 @@ public final class IoUringIoHandler implements IoHandler {
         IoUring.ensureAvailability();
         this.ringBuffer = requireNonNull(ringBuffer, "ringBuffer");
         registrations = new IntObjectHashMap<>();
+        registeredIoUringBufferRing = new IntObjectHashMap<>();
         eventfd = Native.newBlockingEventFd();
         eventfdReadBuf = PlatformDependent.allocateMemory(8);
+        beforeIOHook = PlatformDependent.newMpscQueue();
     }
 
     @Override
     public int run(IoExecutionContext context) {
+        for (;;) {
+            Runnable poll = beforeIOHook.poll();
+            if (poll == null) {
+                break;
+            }
+            poll.run();
+        }
         SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
         CompletionQueue completionQueue = ringBuffer.ioUringCompletionQueue();
         if (!completionQueue.hasCompletions() && context.canBlock()) {
@@ -145,7 +160,7 @@ public final class IoUringIoHandler implements IoHandler {
 
         List<DefaultIoUringIoRegistration> copy = new ArrayList<>(registrations.values());
 
-        for (DefaultIoUringIoRegistration registration: copy) {
+        for (DefaultIoUringIoRegistration registration : copy) {
             registration.close();
         }
 
@@ -177,6 +192,9 @@ public final class IoUringIoHandler implements IoHandler {
         submissionQueue.addLinkTimeout(ringBuffer.fd(), TimeUnit.MILLISECONDS.toNanos(200), RINGFD_ID, (short) 0);
         submissionQueue.submitAndWait();
         completionQueue.process(this::handle);
+        for (IoUringBufferRing ioUringBufferRing : registeredIoUringBufferRing.values()) {
+            ioUringBufferRing.close();
+        }
         completeRingClose();
     }
 
@@ -262,6 +280,37 @@ public final class IoUringIoHandler implements IoHandler {
 
         ringBuffer.ioUringSubmissionQueue().incrementHandledFds();
         return registration;
+    }
+
+    void submitBeforeIO(Runnable runnable) {
+        beforeIOHook.add(runnable);
+        //wakeup ioHandler to process the runnable as soon as possible
+        Native.eventFdWrite(eventfd.intValue(), 1L);
+    }
+
+    IoUringBufferRing fetchOrInitBufferRing(short bgId, short size, int chunkSize,
+                                            ByteBufAllocator byteBufAllocator) throws IOException {
+        IoUringBufferRing cached = registeredIoUringBufferRing.get(bgId);
+        if (cached != null) {
+            return cached;
+        }
+        int ringFd = ringBuffer.fd();
+        long ioUringBufRingAddr = Native.ioUringSetupBufRing(ringFd, size, bgId, 0);
+        if (ioUringBufRingAddr <= 0) {
+            throw new Errors.NativeIoException("initBufferRing(...)", (int) ioUringBufRingAddr, false);
+        }
+        IoUringBufferRing ioUringBufferRing = new IoUringBufferRing(
+                ringFd, ioUringBufRingAddr,
+                size, bgId, chunkSize,
+                byteBufAllocator, this
+        );
+
+        registeredIoUringBufferRing.put(bgId, ioUringBufferRing);
+        return ioUringBufferRing;
+    }
+
+    IoUringBufferRing fromBgid(short bid) {
+        return registeredIoUringBufferRing.get(bid);
     }
 
     private int nextRegistrationId() {

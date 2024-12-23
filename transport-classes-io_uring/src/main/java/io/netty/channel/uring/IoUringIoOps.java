@@ -335,7 +335,7 @@ public final class IoUringIoOps implements IoOps {
      * @return                                      ops.
      */
     static IoUringIoOps newWritev(int fd, byte flags, int writevFlags, long memoryAddress,
-                                         int length, short data) {
+                                  int length, short data) {
         return new IoUringIoOps(Native.IORING_OP_WRITEV, flags, (short) 0, fd,
                 0, memoryAddress, length, writevFlags, data, (short) 0, (short) 0, 0, 0);
     }
@@ -371,8 +371,13 @@ public final class IoUringIoOps implements IoOps {
      */
     static IoUringIoOps newRecv(
             int fd, byte flags, short ioPrio, int recvFlags, long memoryAddress, int length, short data) {
+        return newRecv(fd, flags, ioPrio, recvFlags, memoryAddress, length, data, (short) 0);
+    }
+
+    static IoUringIoOps newRecv(
+            int fd, byte flags, short ioPrio, int recvFlags, long memoryAddress, int length, short data, short bid) {
         return new IoUringIoOps(Native.IORING_OP_RECV, flags, ioPrio, fd,
-                0, memoryAddress, length, recvFlags, data, (short) 0, (short) 0, 0, 0);
+                0, memoryAddress, length, recvFlags, data, bid, (short) 0, 0, 0);
     }
 
     /**

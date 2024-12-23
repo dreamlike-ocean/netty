@@ -680,6 +680,10 @@ public final class PlatformDependent {
         PlatformDependent0.putShort(address, value);
     }
 
+    public static void putShortVolatile(long adddress, short newValue) {
+        PlatformDependent0.putShortVolatile(adddress, newValue);
+    }
+
     public static void putInt(long address, int value) {
         PlatformDependent0.putInt(address, value);
     }

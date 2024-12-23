@@ -115,6 +115,8 @@ final class Native {
     static final int CMSG_OFFSETOF_CMSG_LEVEL = NativeStaticallyReferencedJniMethods.cmsghdrOffsetofCmsgLevel();
     static final int CMSG_OFFSETOF_CMSG_TYPE = NativeStaticallyReferencedJniMethods.cmsghdrOffsetofCmsgType();
 
+    static final int IO_URING_BUFFER_RING_TAIL = NativeStaticallyReferencedJniMethods.ioUringBufferRingOffsetTail();
+
     static final int IOVEC_OFFSETOF_IOV_BASE = NativeStaticallyReferencedJniMethods.iovecOffsetofIovBase();
     static final int IOVEC_OFFSETOF_IOV_LEN = NativeStaticallyReferencedJniMethods.iovecOffsetofIovLen();
     static final int SIZEOF_MSGHDR = NativeStaticallyReferencedJniMethods.sizeofMsghdr();
@@ -131,6 +133,12 @@ final class Native {
     static final int POLLRDHUP = NativeStaticallyReferencedJniMethods.pollrdhup();
     static final int ERRNO_ECANCELED_NEGATIVE = -NativeStaticallyReferencedJniMethods.ecanceled();
     static final int ERRNO_ETIME_NEGATIVE = -NativeStaticallyReferencedJniMethods.etime();
+    static final int ERRNO_NO_BUFFER_NEGATIVE = -NativeStaticallyReferencedJniMethods.enobufs();
+    static final int PAGE_SIZE = NativeStaticallyReferencedJniMethods.pageSize();
+    static final int SIZEOF_IOURING_BUF = NativeStaticallyReferencedJniMethods.sizeofIoUringBuf();
+    static final int IOURING_BUFFER_OFFSETOF_ADDR = NativeStaticallyReferencedJniMethods.ioUringBufferOffsetAddr();
+    static final int IOURING_BUFFER_OFFSETOF_LEN = NativeStaticallyReferencedJniMethods.ioUringBufferOffsetLen();
+    static final int IOURING_BUFFER_OFFSETOF_BID = NativeStaticallyReferencedJniMethods.ioUringBufferOffsetBid();
 
     // These constants must be defined to have the same numeric value as their corresponding
     // ordinal in the enum defined in the io_uring.h header file.
@@ -195,6 +203,8 @@ final class Native {
 
     static final short IORING_RECVSEND_POLL_FIRST = 1 << 0;
 
+    static final int IORING_CQE_BUFFER_SHIFT = 16;
+
     static final int SPLICE_F_MOVE = 1;
 
     static String opToStr(byte op) {
@@ -247,6 +257,7 @@ final class Native {
     static final int IOSQE_ASYNC = NativeStaticallyReferencedJniMethods.iosqeAsync();
     static final int IOSQE_LINK = NativeStaticallyReferencedJniMethods.iosqeLink();
     static final int IOSQE_IO_DRAIN = NativeStaticallyReferencedJniMethods.iosqeDrain();
+    static final int IOSQE_BUFFER_SELECT = NativeStaticallyReferencedJniMethods.iosqeBufferSelect();
     static final int MSG_DONTWAIT = NativeStaticallyReferencedJniMethods.msgDontwait();
     static final int MSG_FASTOPEN = NativeStaticallyReferencedJniMethods.msgFastopen();
     static final int SOL_UDP = NativeStaticallyReferencedJniMethods.solUdp();
@@ -323,7 +334,7 @@ final class Native {
     static void checkAllIOSupported(int ringFd) {
         if (!ioUringProbe(ringFd, REQUIRED_IORING_OPS)) {
             throw new UnsupportedOperationException("Not all operations are supported: "
-                    + Arrays.toString(REQUIRED_IORING_OPS));
+                                                    + Arrays.toString(REQUIRED_IORING_OPS));
         }
     }
 
@@ -347,12 +358,16 @@ final class Native {
                         "you need at least kernel version 5.9, current kernel version: " + kernelVersion);
             } else {
                 logger.debug("Detected kernel " + kernelVersion + " does not match minimum version of 5.9, " +
-                        "trying to use io_uring anyway");
+                             "trying to use io_uring anyway");
             }
         }
     }
 
     private static boolean checkKernelVersion0(String kernelVersion) {
+        return checkKernelVersion(kernelVersion, 5, 9);
+    }
+
+    static boolean checkKernelVersion(String kernelVersion, int targetMajor, int targetMinor) {
         String[] versionComponents = kernelVersion.split("\\.");
         if (versionComponents.length < 3) {
             return false;
@@ -365,10 +380,11 @@ final class Native {
             return false;
         }
 
-        if (major <= 4) {
+        if (major < targetMajor) {
             return false;
         }
-        if (major > 5) {
+
+        if (major > targetMajor) {
             return true;
         }
 
@@ -379,7 +395,7 @@ final class Native {
             return false;
         }
 
-        return minor >= 9;
+        return minor >= targetMinor;
     }
 
     private static native boolean ioUringProbe(int ringFd, int[] ios);
@@ -400,9 +416,9 @@ final class Native {
     }
 
     static native void ioUringExit(long submissionQueueArrayAddress, int submissionQueueRingEntries,
-                                          long submissionQueueRingAddress, int submissionQueueRingSize,
-                                          long completionQueueRingAddress, int completionQueueRingSize,
-                                          int ringFd);
+                                   long submissionQueueRingAddress, int submissionQueueRingSize,
+                                   long completionQueueRingAddress, int completionQueueRingSize,
+                                   int ringFd);
 
     private static native int blockingEventFd();
 
@@ -414,6 +430,10 @@ final class Native {
     static native long cmsghdrData(long hdrAddr);
 
     static native String kernelVersion();
+
+    static native long ioUringSetupBufRing(int ringFd, int entries, short bufferGroup, int flags);
+
+    static native int ioUringFreeBufRing(int ringFd, long ioUringBufRingAddr, int entries, int bufferGroupId);
 
     private Native() {
         // utility

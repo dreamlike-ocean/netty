@@ -296,6 +296,27 @@ enum {
 	IORING_REGISTER_RESTRICTIONS		= 11,
 	IORING_REGISTER_ENABLE_RINGS		= 12,
 
+	/* extended with tagging */
+	IORING_REGISTER_FILES2			= 13,
+	IORING_REGISTER_FILES_UPDATE2		= 14,
+	IORING_REGISTER_BUFFERS2		= 15,
+	IORING_REGISTER_BUFFERS_UPDATE		= 16,
+
+	/* set/clear io-wq thread affinities */
+	IORING_REGISTER_IOWQ_AFF		= 17,
+	IORING_UNREGISTER_IOWQ_AFF		= 18,
+
+	/* set/get max number of io-wq workers */
+	IORING_REGISTER_IOWQ_MAX_WORKERS	= 19,
+
+	/* register/unregister io_uring fd with the ring */
+	IORING_REGISTER_RING_FDS		= 20,
+	IORING_UNREGISTER_RING_FDS		= 21,
+
+	/* register ring based provide buffer group */
+	IORING_REGISTER_PBUF_RING		= 22,
+	IORING_UNREGISTER_PBUF_RING		= 23,
+
 	/* this goes last */
 	IORING_REGISTER_LAST
 };
