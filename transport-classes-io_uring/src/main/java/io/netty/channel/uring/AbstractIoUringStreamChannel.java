@@ -184,7 +184,7 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
         if (shutdownOutputCause != null) {
             if (shutdownInputCause != null) {
                 logger.info("Exception suppressed because a previous exception occurred.",
-                        shutdownInputCause);
+                             shutdownInputCause);
             }
             promise.setFailure(shutdownOutputCause);
         } else if (shutdownInputCause != null) {
@@ -294,7 +294,7 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
             IoUringIoHandler ioUringIoHandler = (IoUringIoHandler) registration().ioHandler();
             IOUringSocketChannelConfig ioUringSocketChannelConfig = (IOUringSocketChannelConfig) config();
 
-            if (IoUring.isIOUringSpliceSupported() && ioUringSocketChannelConfig.isEnableProviderBufferRead()) {
+            if (IoUring.isIORingBufferRingSupported() && ioUringSocketChannelConfig.isEnableBufferSelectRead()) {
                 short bgId = ioUringSocketChannelConfig.getBufferRingConfig().bufferGroupId();
                 IoUringBufferRing ioUringBufferRing = ioUringIoHandler.fromBgid(bgId);
                 if (ioUringBufferRing == null || ioUringBufferRing.hasSpareBuffer() || !ioUringBufferRing.isFull()) {
@@ -471,7 +471,7 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
         }
 
         private boolean socketWasEmptyForSure(int flags) {
-            return IoUring.isIOUringCqeFSockNonEmptySupported() && (flags & Native.IORING_CQE_F_SOCK_NONEMPTY) == 0;
+            return IoUring.isIOUringCqeFSockNonEmptySupported() &&  (flags & Native.IORING_CQE_F_SOCK_NONEMPTY) == 0;
         }
 
         private void handleReadException(ChannelPipeline pipeline, ByteBuf byteBuf,

@@ -334,7 +334,7 @@ final class Native {
     static void checkAllIOSupported(int ringFd) {
         if (!ioUringProbe(ringFd, REQUIRED_IORING_OPS)) {
             throw new UnsupportedOperationException("Not all operations are supported: "
-                                                    + Arrays.toString(REQUIRED_IORING_OPS));
+                    + Arrays.toString(REQUIRED_IORING_OPS));
         }
     }
 
@@ -358,7 +358,7 @@ final class Native {
                         "you need at least kernel version 5.9, current kernel version: " + kernelVersion);
             } else {
                 logger.debug("Detected kernel " + kernelVersion + " does not match minimum version of 5.9, " +
-                             "trying to use io_uring anyway");
+                        "trying to use io_uring anyway");
             }
         }
     }
@@ -416,9 +416,9 @@ final class Native {
     }
 
     static native void ioUringExit(long submissionQueueArrayAddress, int submissionQueueRingEntries,
-                                   long submissionQueueRingAddress, int submissionQueueRingSize,
-                                   long completionQueueRingAddress, int completionQueueRingSize,
-                                   int ringFd);
+                                          long submissionQueueRingAddress, int submissionQueueRingSize,
+                                          long completionQueueRingAddress, int completionQueueRingSize,
+                                          int ringFd);
 
     private static native int blockingEventFd();
 

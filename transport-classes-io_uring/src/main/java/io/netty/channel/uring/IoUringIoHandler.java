@@ -160,7 +160,7 @@ public final class IoUringIoHandler implements IoHandler {
 
         List<DefaultIoUringIoRegistration> copy = new ArrayList<>(registrations.values());
 
-        for (DefaultIoUringIoRegistration registration : copy) {
+        for (DefaultIoUringIoRegistration registration: copy) {
             registration.close();
         }
 

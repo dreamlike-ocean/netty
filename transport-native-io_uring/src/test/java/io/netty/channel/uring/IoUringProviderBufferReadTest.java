@@ -62,7 +62,7 @@ public class IoUringProviderBufferReadTest {
                         bufferSyncer.offer((ByteBuf) msg);
                     }
                 })
-                .childOption(IoUringChannelOption.ENABLE_PROVIDER_BUFFER_READ, true)
+                .childOption(IoUringChannelOption.ENABLE_BUFFER_SELECT_READ, true)
                 .childOption(
                         IoUringChannelOption.IOURING_BUFFER_RING_CONFIG,
                         new BufferRingConfig((short) 1, (short) 2, 1024)
