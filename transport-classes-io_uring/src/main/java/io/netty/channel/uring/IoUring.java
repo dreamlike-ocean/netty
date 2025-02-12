@@ -159,7 +159,12 @@ public final class IoUring {
         return IORING_CQE_F_SOCK_NONEMPTY_SUPPORTED;
     }
 
-    static boolean isIOUringSpliceSupported() {
+    /**
+     * Returns {@code true} if the io_uring native transport supports IORING_OP_SPLICE
+     *
+     * @return {@code true}  if it's possible to use {@linkplain io.netty.channel.DefaultFileRegion} via io_uring, otherwise {@code false}.
+     */
+    public static boolean isIOUringSpliceSupported() {
         return IORING_SPLICE_SUPPORTED;
     }
 
@@ -171,7 +176,12 @@ public final class IoUring {
         return IORING_REGISTER_IOWQ_MAX_WORKERS_SUPPORTED;
     }
 
-    static boolean isIOUringSetupCqeSizeSupported() {
+    /**
+     * Returns {@code true} if the io_uring native transport supports IORING_SETUP_CQ_SIZE
+     *
+     * @return {@code true}  if it's possible to configure cqSize in {@linkplain IoUringIoHandlerConfig}, otherwise {@code false}.
+     */
+    public static boolean isIOUringSetupCqeSizeSupported() {
         return IORING_SETUP_CQ_SIZE_SUPPORTED;
     }
 
