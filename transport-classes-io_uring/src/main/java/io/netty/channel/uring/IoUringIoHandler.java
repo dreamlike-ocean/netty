@@ -28,6 +28,7 @@ import io.netty.channel.unix.FileDescriptor;
 import io.netty.channel.unix.IovArray;
 import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
+import io.netty.util.collection.MaxCapacityQueue;
 import io.netty.util.concurrent.ThreadAwareExecutor;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.StringUtil;
@@ -40,6 +41,8 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Queue;
+import java.util.ArrayDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -56,6 +59,7 @@ public final class IoUringIoHandler implements IoHandler {
     private final RingBuffer ringBuffer;
     private final IntObjectMap<IoUringBufferRing> registeredIoUringBufferRing;
     private final IntObjectMap<DefaultIoUringIoRegistration> registrations;
+    private final Queue<FileDescriptor[]> cachedPipes;
     // The maximum number of bytes for an InetAddress / Inet6Address
     private final byte[] inet4AddressArray = new byte[SockaddrIn.IPV4_ADDRESS_LENGTH];
     private final byte[] inet6AddressArray = new byte[SockaddrIn.IPV6_ADDRESS_LENGTH];
@@ -151,6 +155,8 @@ public final class IoUringIoHandler implements IoHandler {
         iovArray = new IovArray(Unpooled.wrappedBuffer(
                 Buffer.allocateDirectWithNativeOrder(IoUring.NUM_ELEMENTS_IOVEC * IovArray.IOV_SIZE))
                 .setIndex(0, 0));
+        int cachedPipeSize = IoUring.isSpliceSupported() ? config.getMaxCachedPipeSize() : 0;
+        this.cachedPipes = new MaxCapacityQueue<>(new ArrayDeque<>(cachedPipeSize), cachedPipeSize);
     }
 
     @Override
@@ -241,6 +247,26 @@ public final class IoUringIoHandler implements IoHandler {
         throw new IllegalArgumentException(
                 String.format("Cant find bgId:%d, please register it in ioUringIoHandler", bgId)
         );
+    }
+
+    FileDescriptor[] getPipe() {
+        FileDescriptor[] pipe = cachedPipes.poll();
+        if (pipe == null) {
+            try {
+                pipe = FileDescriptor.pipe();
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+        return pipe;
+    }
+
+    void returnPipe(FileDescriptor[] pipe) {
+        boolean offerSuccess = cachedPipes.offer(pipe);
+        if (!offerSuccess) {
+            closeSilently(pipe[0]);
+            closeSilently(pipe[1]);
+        }
     }
 
     private int drainAndProcessAll(CompletionQueue completionQueue, CompletionCallback callback) {
@@ -402,7 +428,22 @@ public final class IoUringIoHandler implements IoHandler {
         for (IoUringBufferRing ioUringBufferRing : registeredIoUringBufferRing.values()) {
             ioUringBufferRing.close();
         }
+        if (cachedPipes != null) {
+            for (FileDescriptor[] pipes : cachedPipes) {
+                for (FileDescriptor pipe : pipes) {
+                    closeSilently(pipe);
+                }
+            }
+        }
         completeRingClose();
+    }
+
+    private static void closeSilently(FileDescriptor fd) {
+        try {
+            fd.close();
+        } catch (IOException e) {
+            logger.debug("Error while closing a pipe", e);
+        }
     }
 
     // We need to prevent the race condition where a wakeup event is submitted to a file descriptor that has

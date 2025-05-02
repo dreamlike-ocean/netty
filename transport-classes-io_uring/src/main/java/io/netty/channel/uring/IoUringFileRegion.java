@@ -31,18 +31,20 @@ final class IoUringFileRegion implements FileRegion {
     private static final short SPLICE_TO_SOCKET = 2;
 
     final DefaultFileRegion fileRegion;
+    final IoUringIoHandler ioUringIoHandler;
     private FileDescriptor[] pipe;
     private int transferred;
     private int pipeLen = -1;
 
-    IoUringFileRegion(DefaultFileRegion fileRegion) {
+    IoUringFileRegion(DefaultFileRegion fileRegion, IoUringIoHandler ioUringIoHandler) {
         this.fileRegion = fileRegion;
+        this.ioUringIoHandler = ioUringIoHandler;
     }
 
     void open() throws IOException {
         fileRegion.open();
-        if (pipe == null) {
-            pipe = FileDescriptor.pipe();
+        if (this.pipe == null) {
+            this.pipe = ioUringIoHandler.getPipe();
         }
     }
 
@@ -158,7 +160,7 @@ final class IoUringFileRegion implements FileRegion {
     @Override
     public boolean release() {
         if (fileRegion.release()) {
-            closePipeIfNeeded();
+            releasePipeIfNeeded();
             return true;
         }
         return false;
@@ -167,16 +169,15 @@ final class IoUringFileRegion implements FileRegion {
     @Override
     public boolean release(int decrement) {
         if (fileRegion.release(decrement)) {
-            closePipeIfNeeded();
+            releasePipeIfNeeded();
             return true;
         }
         return false;
     }
 
-    private void closePipeIfNeeded() {
+    private void releasePipeIfNeeded() {
         if (pipe != null) {
-            closeSilently(pipe[0]);
-            closeSilently(pipe[1]);
+            ioUringIoHandler.returnPipe(pipe);
         }
     }
 

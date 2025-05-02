@@ -27,6 +27,7 @@ import io.netty.channel.socket.ChannelInputShutdownReadComplete;
 import io.netty.channel.socket.ChannelOutputShutdownEvent;
 import io.netty.handler.ssl.SslCloseCompletionEvent;
 import io.netty.util.ReferenceCounted;
+import io.netty.util.collection.MaxCapacityQueue;
 
 import java.util.ArrayDeque;
 import java.util.Queue;

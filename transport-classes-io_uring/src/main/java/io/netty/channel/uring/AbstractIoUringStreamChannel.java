@@ -225,7 +225,8 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
         // Since we cannot use synchronous sendfile,
         // the channel can only support DefaultFileRegion instead of FileRegion.
         if (IoUring.isSpliceSupported() && msg instanceof DefaultFileRegion) {
-            return new IoUringFileRegion((DefaultFileRegion) msg);
+            final IoUringIoHandler ioUringIoHandler = registration().attachment();
+            return new IoUringFileRegion((DefaultFileRegion) msg, ioUringIoHandler);
         }
 
         return super.filterOutboundMessage(msg);

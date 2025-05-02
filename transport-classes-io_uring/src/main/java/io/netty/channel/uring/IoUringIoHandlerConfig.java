@@ -20,7 +20,6 @@ import io.netty.util.internal.ObjectUtil;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -77,6 +76,8 @@ public final class IoUringIoHandlerConfig {
 
     private int maxUnboundedWorker;
 
+    private int maxCachedPipeSize;
+
     private Set<IoUringBufferRingConfig> bufferRingConfigs;
 
     /**
@@ -109,6 +110,14 @@ public final class IoUringIoHandlerConfig {
      */
     public int getMaxUnboundedWorker() {
         return maxUnboundedWorker;
+    }
+
+    /**
+     * Return the maximum number of cached pipes.
+     * @return the maximum number of cached pipes
+     */
+    public int getMaxCachedPipeSize() {
+        return maxCachedPipeSize;
     }
 
     /**
@@ -182,6 +191,17 @@ public final class IoUringIoHandlerConfig {
             }
         }
         bufferRingConfigs = configSet;
+        return this;
+    }
+
+    /**
+     * Set the maximum number of cached pipes.
+     * @param maxCachedPipeSize the maximum number of cached pipes
+     * @return reference to this, so the API can be used fluently
+     */
+    public IoUringIoHandlerConfig setCachedPipeSize(int maxCachedPipeSize) {
+        ObjectUtil.checkPositiveOrZero(maxCachedPipeSize, "maxCachedPipeSize");
+        this.maxCachedPipeSize = maxCachedPipeSize;
         return this;
     }
 

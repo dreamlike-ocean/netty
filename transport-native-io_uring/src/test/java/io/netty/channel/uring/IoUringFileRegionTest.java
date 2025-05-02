@@ -43,7 +43,11 @@ public class IoUringFileRegionTest {
 
     @Test
     public void testSendFile() throws IOException, InterruptedException {
-        MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory());
+        // setCachedPipeSize(1) to make sure that the pipe is not closed before the read is completed.
+        MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory(
+                new IoUringIoHandlerConfig()
+                        .setCachedPipeSize(1)
+        ));
         String sampleString = "hello netty io_uring sendFile!";
         File inFile = File.createTempFile(UUID.randomUUID().toString(), ".tmp");
         inFile.deleteOnExit();
@@ -58,7 +62,6 @@ public class IoUringFileRegionTest {
 
                     @Override
                     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
-                        compositeByteBuf = ctx.alloc().compositeBuffer();
                     }
 
                     @Override
@@ -71,6 +74,9 @@ public class IoUringFileRegionTest {
                     @Override
                     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
                         ByteBuf buf = (ByteBuf) msg;
+                        if (compositeByteBuf == null) {
+                            compositeByteBuf = ctx.alloc().compositeBuffer();
+                        }
                         compositeByteBuf.addComponent(true, buf);
                         if (compositeByteBuf.readableBytes() == inFile.length()) {
                             sendFileResult.put(compositeByteBuf);
@@ -87,12 +93,18 @@ public class IoUringFileRegionTest {
                 .handler(new ChannelInboundHandlerAdapter());
         Channel clientChannel = clientBoostrap.connect(serverChannel.localAddress()).syncUninterruptibly().channel();
         clientChannel.writeAndFlush(new DefaultFileRegion(inFile, 0, Files.size(inFile.toPath()))).sync();
-        ByteBuf result = sendFileResult.take();
         ByteBuf expected = Unpooled.copiedBuffer(sampleString, StandardCharsets.US_ASCII);
         try {
+            ByteBuf result = sendFileResult.take();
+            try {
+                assertEquals(expected, result);
+            } finally {
+                result.release();
+            }
+            clientChannel.writeAndFlush(new DefaultFileRegion(inFile, 0, Files.size(inFile.toPath()))).sync();
+            result = sendFileResult.take();
             assertEquals(expected, result);
         } finally {
-            result.release();
             expected.release();
         }
 

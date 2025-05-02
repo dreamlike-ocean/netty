@@ -30,6 +30,7 @@ import io.netty.channel.socket.ChannelOutputShutdownEvent;
 import io.netty.handler.codec.http2.Http2FrameCodec.DefaultHttp2FrameStream;
 import io.netty.handler.ssl.SslCloseCompletionEvent;
 import io.netty.util.ReferenceCounted;
+import io.netty.util.collection.MaxCapacityQueue;
 import io.netty.util.internal.ObjectUtil;
 
 import java.util.ArrayDeque;

@@ -13,17 +13,17 @@
  * License for the specific language governing permissions and limitations
  * under the License.
  */
-package io.netty.handler.codec.http2;
+package io.netty.util.collection;
 
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.Queue;
 
-final class MaxCapacityQueue<E> implements Queue<E> {
+public final class MaxCapacityQueue<E> implements Queue<E> {
     private final Queue<E> queue;
     private final int maxCapacity;
 
-    MaxCapacityQueue(Queue<E> queue, int maxCapacity) {
+    public MaxCapacityQueue(Queue<E> queue, int maxCapacity) {
         this.queue = queue;
         this.maxCapacity = maxCapacity;
     }
