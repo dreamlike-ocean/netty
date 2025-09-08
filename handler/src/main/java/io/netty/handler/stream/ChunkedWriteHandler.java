@@ -73,7 +73,7 @@ public class ChunkedWriteHandler extends ChannelDuplexHandler {
         InternalLoggerFactory.getInstance(ChunkedWriteHandler.class);
 
     private Queue<PendingWrite> queue;
-    private volatile ChannelHandlerContext ctx;
+    protected volatile ChannelHandlerContext ctx;
 
     public ChunkedWriteHandler() {
     }

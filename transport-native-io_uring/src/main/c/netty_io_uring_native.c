@@ -76,6 +76,7 @@ static jclass longArrayClass = NULL;
 static char* staticPackagePrefix = NULL;
 static int register_unix_called = 0;
 
+static jclass sunNioFileChannelClass = NULL;
 static jfieldID fileChannelFieldId = NULL;
 static jfieldID fdFieldId = NULL;
 static jfieldID fileDescriptorFieldId = NULL;
@@ -88,6 +89,7 @@ static void netty_io_uring_native_JNI_OnUnLoad(JNIEnv* env, const char* packageP
     netty_unix_buffer_JNI_OnUnLoad(env, packagePrefix);
 
     NETTY_JNI_UTIL_UNLOAD_CLASS(env, longArrayClass);
+     NETTY_JNI_UTIL_UNLOAD_CLASS(env, sunNioFileChannelClass);
 }
 
 void io_uring_setup_ring_pointers(struct io_uring_params *p,
@@ -217,12 +219,18 @@ static void netty_io_uring_eventFdWrite(JNIEnv* env, jclass clazz, jint fd, jlon
     netty_unix_errors_throwChannelExceptionErrorNo(env, "eventfd_write(...) failed: ", err);
 }
 
-static jint netty_io_uring_getFd0(JNIEnv* env, jclass clazz, jobject fileRegion) {
-    jobject fileChannel = (*env)->GetObjectField(env, fileRegion, fileChannelFieldId);
-    if (fileChannel == NULL) {
-        netty_unix_errors_throwRuntimeException(env, "failed to get DefaultFileRegion.file");
-        return -1;
+static jint netty_io_uring_getFd0(JNIEnv* env, jclass clazz, jobject fileRegionOrChannel) {
+    jobject fileChannel;
+    if ((*env)->IsInstanceOf(env, fileRegionOrChannel, sunNioFileChannelClass)) {
+     fileChannel = fileRegionOrChannel;
+    } else {
+     fileChannel= (*env)->GetObjectField(env, fileRegionOrChannel, fileChannelFieldId);
+     if (fileChannel == NULL) {
+         netty_unix_errors_throwRuntimeException(env, "failed to get DefaultFileRegion.file");
+         return -1;
+      }
     }
+
     jobject fileDescriptor = (*env)->GetObjectField(env, fileChannel, fileDescriptorFieldId);
     if (fileDescriptor == NULL) {
         netty_unix_errors_throwRuntimeException(env, "failed to get FileChannelImpl.fd");
@@ -909,6 +917,7 @@ static jint netty_iouring_native_JNI_OnLoad(JNIEnv* env, const char* packagePref
 
     NETTY_JNI_UTIL_GET_FIELD(env, fileRegionCls, fileChannelFieldId, "file", "Ljava/nio/channels/FileChannel;", done);
 
+    NETTY_JNI_UTIL_LOAD_CLASS(env, sunNioFileChannelClass, "sun/nio/ch/FileChannelImpl", done);
     NETTY_JNI_UTIL_FIND_CLASS(env, fileChannelCls, "sun/nio/ch/FileChannelImpl", done);
     NETTY_JNI_UTIL_GET_FIELD(env, fileChannelCls, fileDescriptorFieldId, "fd", "Ljava/io/FileDescriptor;", done);
 

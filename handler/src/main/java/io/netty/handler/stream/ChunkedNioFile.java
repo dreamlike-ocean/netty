@@ -37,11 +37,11 @@ import java.nio.channels.FileChannel;
  */
 public class ChunkedNioFile implements ChunkedInput<ByteBuf> {
 
-    private final FileChannel in;
-    private final long startOffset;
-    private final long endOffset;
-    private final int chunkSize;
-    private long offset;
+    protected final FileChannel in;
+    protected final long startOffset;
+    protected final long endOffset;
+    protected final int chunkSize;
+    protected long offset;
 
     /**
      * Creates a new instance that fetches data from the specified file.

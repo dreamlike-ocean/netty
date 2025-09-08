@@ -42,6 +42,8 @@ public class IoUringFileTest {
         try {
             int fd = Native.getFd(region);
             Assertions.assertTrue(fd >= 0);
+            int fd1 = Native.getFd(channel);
+            Assertions.assertEquals(fd, fd1);
         } finally {
             region.release();
         }

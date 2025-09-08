@@ -31,6 +31,7 @@ import io.netty.util.internal.ThrowableUtil;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.channels.Selector;
 import java.nio.file.Path;
 import java.util.Arrays;
@@ -610,6 +611,10 @@ final class Native {
     static native void eventFdWrite(int fd, long value);
 
     static int getFd(DefaultFileRegion fileChannel) {
+        return getFd0(fileChannel);
+    }
+
+    static int getFd(FileChannel fileChannel) {
         return getFd0(fileChannel);
     }
 
