@@ -47,19 +47,16 @@ public class ChunkedIoUringFile extends ChunkedNioFile {
 
     static final int DEFAULT_CHUNK_SIZE = 8192;
 
-    private final int fd;
-    private final IoUringAsyncFileIoHandle ioUringAsyncFileIoHandle;
-    private final IoUringChunkedWriteHandler ioUringChunkedWriteHandler;
-    private Future<IoRegistration> registerFuture;
-    private volatile IoRegistration registration;
-    private volatile AtomicReference<ByteBuf> readBufferReference;
-    private volatile Exception cause;
+    final int fd;
+    private IoUringChunkedWriteHandler ioUringChunkedWriteHandler;
+    private ByteBuf readBuffer;
+    private Exception cause;
 
     /**
      * Creates a new instance that fetches data from the specified file.
      */
-    public ChunkedIoUringFile(File in, IoUringChunkedWriteHandler ioUringChunkedWriteHandler) throws IOException {
-        this(new RandomAccessFile(in, "r").getChannel(), ioUringChunkedWriteHandler);
+    public ChunkedIoUringFile(File in) throws IOException {
+        this(new RandomAccessFile(in, "r").getChannel());
     }
 
     /**
@@ -68,15 +65,15 @@ public class ChunkedIoUringFile extends ChunkedNioFile {
      * @param chunkSize the number of bytes to fetch on each
      *                  {@link #readChunk(ChannelHandlerContext)} call
      */
-    public ChunkedIoUringFile(File in, int chunkSize, IoUringChunkedWriteHandler ioUringChunkedWriteHandler) throws IOException {
-        this(new RandomAccessFile(in, "r").getChannel(), chunkSize, ioUringChunkedWriteHandler);
+    public ChunkedIoUringFile(File in, int chunkSize) throws IOException {
+        this(new RandomAccessFile(in, "r").getChannel(), chunkSize);
     }
 
     /**
      * Creates a new instance that fetches data from the specified file.
      */
-    public ChunkedIoUringFile(FileChannel in, IoUringChunkedWriteHandler ioUringChunkedWriteHandler) throws IOException {
-        this(in, DEFAULT_CHUNK_SIZE, ioUringChunkedWriteHandler);
+    public ChunkedIoUringFile(FileChannel in) throws IOException {
+        this(in, DEFAULT_CHUNK_SIZE);
     }
 
     /**
@@ -85,8 +82,8 @@ public class ChunkedIoUringFile extends ChunkedNioFile {
      * @param chunkSize the number of bytes to fetch on each
      *                  {@link #readChunk(ChannelHandlerContext)} call
      */
-    public ChunkedIoUringFile(FileChannel in, int chunkSize, IoUringChunkedWriteHandler ioUringChunkedWriteHandler) throws IOException {
-        this(in, 0, in.size(), chunkSize, ioUringChunkedWriteHandler);
+    public ChunkedIoUringFile(FileChannel in, int chunkSize) throws IOException {
+        this(in, 0, in.size(), chunkSize);
     }
 
     /**
@@ -97,81 +94,50 @@ public class ChunkedIoUringFile extends ChunkedNioFile {
      * @param chunkSize the number of bytes to fetch on each
      *                  {@link #readChunk(ChannelHandlerContext)} call
      */
-    public ChunkedIoUringFile(FileChannel in, long offset, long length, int chunkSize, IoUringChunkedWriteHandler ioUringChunkedWriteHandler)
-            throws IOException {
+    public ChunkedIoUringFile(FileChannel in, long offset, long length, int chunkSize) throws IOException {
         super(in, offset, length, chunkSize);
-        this.ioUringChunkedWriteHandler = ioUringChunkedWriteHandler;
         this.fd = Native.getFd(in);
-        this.ioUringAsyncFileIoHandle = new IoUringAsyncFileIoHandle();
-        this.readBufferReference = new AtomicReference<>();
     }
 
-    @Override
-    public void close() throws Exception {
-        IoRegistration ioRegistration = registration;
-        if (ioRegistration != null) {
-            ioRegistration.cancel();
-        }
+    void handleFailed(Exception cause) {
+        this.cause = cause;
+        ioUringChunkedWriteHandler.resumeTransfer();
+    }
+
+    void handleSuccess(int readBytes) {
+        this.offset += readBytes;
+        ByteBuf readBuffer = this.readBuffer;
+        readBuffer.writerIndex(readBuffer.writerIndex() + readBytes);
+        ioUringChunkedWriteHandler.resumeTransfer();
+    }
+
+    void attach(IoUringChunkedWriteHandler ioUringChunkedWriteHandler) {
+        this.ioUringChunkedWriteHandler = ioUringChunkedWriteHandler;
     }
 
     @Override
     public ByteBuf readChunk(ByteBufAllocator allocator) throws Exception {
-        Future<IoRegistration> future = registerFuture;
-        if (!future.isDone()) {
-            future.addListener(new GenericFutureListener<Future<? super IoRegistration>>() {
-                @Override
-                public void operationComplete(Future<? super IoRegistration> future) throws Exception {
-                    ioUringChunkedWriteHandler.resumeTransfer();
-                }
-            });
-            return null;
+
+        if (ioUringChunkedWriteHandler == null) {
+            throw new IllegalArgumentException("Only IoUringChunkedWriteHandler can handle ChunkedIoUringFile");
         }
 
         if (cause != null) {
-            ReferenceCountUtil.release(readBufferReference.get());
+            ReferenceCountUtil.release(readBuffer);
             throw cause;
         }
 
-        ByteBuf readChunk = readBufferReference.getAndSet(null);
-        if (readChunk != null) {
-            return readChunk;
+        ByteBuf readBuffer = this.readBuffer;
+        if (readBuffer != null) {
+            this.readBuffer = null;
+            return readBuffer;
         }
 
         int chunkSize = (int) Math.min(this.chunkSize, endOffset - offset);
-        ByteBuf buffer = allocator.buffer(0);
-        if (!readBufferReference.compareAndSet(null, buffer)) {
-            ReferenceCountUtil.safeRelease(buffer);
-            return null;
-        }
-        // cas successfully
-        // now we can malloc the buffer
-        buffer.capacity(chunkSize);
-        registration.submit(IoUringIoOps.newRead(fd, buffer.memoryAddress(), offset, chunkSize));
+        readBuffer = allocator.directBuffer(chunkSize);
+        this.readBuffer = readBuffer;
+        ioUringChunkedWriteHandler.requestAsyncRead(this, readBuffer);
         return null;
     }
 
-    void register(IoEventLoop ioEventLoop) {
-        registerFuture = ioEventLoop.register(this.ioUringAsyncFileIoHandle);
-    }
-
-    class IoUringAsyncFileIoHandle implements IoUringIoHandle {
-
-        @Override
-        public void handle(IoRegistration registration, IoEvent ioEvent) {
-            IoUringIoEvent uringIoEvent = (IoUringIoEvent) ioEvent;
-            int res = uringIoEvent.res();
-            if (res < 0) {
-                cause = Errors.newIOException("io_uring read", res);
-                return;
-            }
-            ByteBuf readBuffer = readBufferReference.get();
-            readBuffer.writerIndex(readBuffer.writerIndex() + res);
-            ioUringChunkedWriteHandler.resumeTransfer();
-        }
-
-        @Override
-        public void close() throws Exception {
-            in.close();
-        }
-    }
 }

@@ -379,12 +379,11 @@ public final class IoUringIoOps implements IoOps {
      * @return                                      ops.
      */
     static IoUringIoOps newRead(
-            int fd,long memoryAddress, long offset, int length) {
+            int fd, long memoryAddress, long offset, int length) {
         // See https://github.com/axboe/liburing/blob/liburing-2.8/src/include/liburing.h#L794
         return new IoUringIoOps(Native.IORING_OP_READ, (byte) 0, (short) 0, fd,
                 offset, memoryAddress, length, 0, (short) 0, (short) 0, (short) 0, 0, 0L);
     }
-
 
     /**
      * Returns a new {@code OP_RECV} {@link IoUringIoOps}.
