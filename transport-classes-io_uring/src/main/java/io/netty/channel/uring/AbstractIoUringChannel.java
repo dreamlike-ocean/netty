@@ -83,7 +83,7 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
     private static final int READ_SCHEDULED = 1 << 5;
     private static final int CONNECT_SCHEDULED = 1 << 6;
 
-    private short opsId = Short.MIN_VALUE;
+    private short opsId = 1;
 
     private long pollInId;
     private long pollOutId;
@@ -194,11 +194,21 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
     protected final short nextOpsId() {
         short id = opsId++;
 
-        // We use 0 for "none".
-        if (id == 0) {
-            id = opsId++;
+        // We use 0 for "none" and reserve negative values for internal markers.
+        if (id <= 0) {
+            opsId = 2;
+            id = 1;
         }
         return id;
+    }
+
+    protected final void incrementOutstandingWrites() {
+        incrementOutstandingWrites(1);
+    }
+
+    protected final void incrementOutstandingWrites(int delta) {
+        numOutstandingWrites = (short) (numOutstandingWrites + delta);
+        assert numOutstandingWrites >= 0;
     }
 
     public final boolean isOpen() {
@@ -413,6 +423,10 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
 
     protected abstract boolean isStreamSocket();
 
+    protected boolean isWriteIoOp(byte op, short data) {
+        return false;
+    }
+
     private long schedulePollAdd(int ioMask, int mask, boolean multishot) {
         assert (ioState & ioMask) == 0;
         int fd = fd().intValue();
@@ -461,7 +475,11 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
                 case Native.IORING_OP_ACCEPT:
                 case Native.IORING_OP_RECVMSG:
                 case Native.IORING_OP_READ:
-                    readComplete(op, res, flags, data);
+                    if (isWriteIoOp(op, data)) {
+                        writeComplete(op, res, flags, data);
+                    } else {
+                        readComplete(op, res, flags, data);
+                    }
                     break;
                 case Native.IORING_OP_WRITEV:
                 case Native.IORING_OP_SEND:

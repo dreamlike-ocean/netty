@@ -371,6 +371,24 @@ public final class IoUringIoOps implements IoOps {
     }
 
     /**
+     * Returns a new {@code OP_READ} {@link IoUringIoOps}.
+     *
+     * @param fd                                    the filedescriptor
+     * @param flags                                 the flags.
+     * @param readFlags                             the read flags.
+     * @param offset                                the offset in the file.
+     * @param memoryAddress                         the memory address of the buffer
+     * @param length                                the length of the buffer.
+     * @param data                                  the data
+     * @return                                      ops.
+     */
+    static IoUringIoOps newRead(
+            int fd, byte flags, int readFlags, long offset, long memoryAddress, int length, short data) {
+        return new IoUringIoOps(Native.IORING_OP_READ, flags, (short) 0, fd,
+                offset, memoryAddress, length, readFlags, data, (short) 0, (short) 0, 0, 0);
+    }
+
+    /**
      * Returns a new {@code OP_RECV} {@link IoUringIoOps}.
      *
      * @param fd                                    the filedescriptor

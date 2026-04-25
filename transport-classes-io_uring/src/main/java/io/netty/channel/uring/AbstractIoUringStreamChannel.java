@@ -53,6 +53,9 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
      */
     private static final int FILE_REGION_MAX_CHUNK_SIZE = Math.min(16 * 1024 * 1024,
             Math.max(1, SystemPropertyUtil.getInt("io.netty.iouring.fileRegionChunkSize", 64 * 1024)));
+    private static final short FILE_REGION_READ_DATA = Short.MIN_VALUE;
+    private static final String FORCE_ASYNC_DEFAULT_FILE_REGION_PROPERTY =
+            "io.netty.iouring.forceAsyncDefaultFileRegion";
 
     // Store the opCode so we know if we used WRITE or WRITEV.
     byte writeOpCode;
@@ -75,6 +78,11 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
     @Override
     protected final boolean isStreamSocket() {
         return true;
+    }
+
+    @Override
+    protected final boolean isWriteIoOp(byte op, short data) {
+        return op == Native.IORING_OP_READ && data == FILE_REGION_READ_DATA;
     }
 
     @Override
@@ -241,8 +249,12 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
 
     @Override
     protected Object filterOutboundMessage(Object msg) {
-        if (IoUring.isSpliceSupported() && msg instanceof DefaultFileRegion) {
-            return new IoUringFileRegion((DefaultFileRegion) msg);
+        if (msg instanceof DefaultFileRegion) {
+            DefaultFileRegion fileRegion = (DefaultFileRegion) msg;
+            if (IoUring.isSpliceSupported() && !forceAsyncDefaultFileRegion()) {
+                return new IoUringFileRegion(fileRegion);
+            }
+            return new IoUringReadFileRegion(fileRegion);
         }
 
         if (msg instanceof FileRegion) {
@@ -253,12 +265,17 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
         return super.filterOutboundMessage(msg);
     }
 
+    private static boolean forceAsyncDefaultFileRegion() {
+        return SystemPropertyUtil.getBoolean(FORCE_ASYNC_DEFAULT_FILE_REGION_PROPERTY, false);
+    }
+
     protected class IoUringStreamUnsafe extends AbstractUringUnsafe {
 
         private ByteBuf readBuffer;
 
         // Chunk buffer for generic FileRegion writes. Non-null while a send is in flight.
         private ByteBuf fileRegionChunkBuf;
+        private boolean fileRegionChunkPendingNotification;
 
         @Override
         protected int scheduleWriteMultiple(ChannelOutboundBuffer in) {
@@ -310,15 +327,12 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
                     return 0;
                 }
                 ops = fileRegion.splice(fd);
+            } else if (msg instanceof IoUringReadFileRegion) {
+                return scheduleWriteDefaultFileRegion(registration, (IoUringReadFileRegion) msg);
             } else if (msg instanceof FileRegion) {
                 return scheduleWriteFileRegion(fd, registration, (FileRegion) msg);
             } else {
-                ByteBuf buf = (ByteBuf) msg;
-                long address = IoUring.memoryAddress(buf) + buf.readerIndex();
-                int length = buf.readableBytes();
-                short opsid = nextOpsId();
-
-                ops = IoUringIoOps.newSend(fd, (byte) 0, 0, address, length, opsid);
+                ops = newSendIoOps(fd, (ByteBuf) msg, false);
             }
             byte opCode = ops.opcode();
             writeId = registration.submit(ops);
@@ -327,6 +341,12 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
                 return 0;
             }
             return 1;
+        }
+
+        protected IoUringIoOps newSendIoOps(int fd, ByteBuf buf, boolean allowZeroCopy) {
+            long address = IoUring.memoryAddress(buf) + buf.readerIndex();
+            int length = buf.readableBytes();
+            return IoUringIoOps.newSend(fd, (byte) 0, 0, address, length, nextOpsId());
         }
 
         // Read a chunk from a generic FileRegion into a direct ByteBuf and submit it as an
@@ -377,6 +397,56 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
                 // being deregistered). unregistered() will release fileRegionChunkBuf and the
                 // outbound buffer will release the FileRegion, so nothing to clean up here --
                 // mirroring the plain ByteBuf path above.
+                return 0;
+            }
+            return 1;
+        }
+
+        private int scheduleWriteDefaultFileRegion(IoRegistration registration, IoUringReadFileRegion region) {
+            ByteBuf buf = fileRegionChunkBuf;
+            if (buf != null) {
+                assert buf.isReadable();
+                return submitFileRegionChunk(fd().intValue(), registration, false);
+            }
+
+            long remaining = region.count() - region.readTransferred();
+            if (remaining <= 0) {
+                fileRegionChunkBuf = alloc().directBuffer(0);
+                return submitFileRegionChunk(fd().intValue(), registration, false);
+            }
+
+            try {
+                region.open();
+            } catch (IOException e) {
+                handleWriteError(e);
+                return 0;
+            }
+
+            int chunkSize = (int) Math.min(remaining, FILE_REGION_MAX_CHUNK_SIZE);
+            buf = alloc().directBuffer(chunkSize);
+            fileRegionChunkBuf = buf;
+
+            IoUringIoOps ops = IoUringIoOps.newRead(region.fd(), (byte) 0, 0, region.fileOffset(),
+                    IoUring.memoryAddress(buf) + buf.writerIndex(), buf.writableBytes(), FILE_REGION_READ_DATA);
+            byte opCode = ops.opcode();
+            writeId = registration.submit(ops);
+            writeOpCode = opCode;
+            if (writeId == 0) {
+                releaseFileRegionChunkBuf();
+                return 0;
+            }
+            return 1;
+        }
+
+        private int submitFileRegionChunk(int fd, IoRegistration registration, boolean allowZeroCopy) {
+            ByteBuf buf = fileRegionChunkBuf;
+            assert buf != null;
+            IoUringIoOps ops = newSendIoOps(fd, buf, allowZeroCopy);
+            byte opCode = ops.opcode();
+            writeId = registration.submit(ops);
+            writeOpCode = opCode;
+            if (writeId == 0) {
+                releaseFileRegionChunkBuf();
                 return 0;
             }
             return 1;
@@ -662,6 +732,93 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
             return true;
         }
 
+        protected void retainFileRegionChunkForNotification(ByteBuf buf) {
+            // NOOP
+        }
+
+        protected void releasePendingZeroCopyWriteBatch() {
+            // NOOP
+        }
+
+        protected final boolean hasPendingFileRegionChunkNotification() {
+            return fileRegionChunkPendingNotification;
+        }
+
+        private boolean handleWriteCompleteDefaultFileRegion(ChannelOutboundBuffer channelOutboundBuffer,
+                                                             IoUringReadFileRegion region,
+                                                             byte op, int res, int flags) {
+            ByteBuf buf = fileRegionChunkBuf;
+            boolean zeroCopyNotification = (flags & Native.IORING_CQE_F_NOTIF) != 0;
+            boolean zeroCopyWrite = op == Native.IORING_OP_SEND_ZC;
+            boolean more = (flags & Native.IORING_CQE_F_MORE) != 0;
+            try {
+                if (zeroCopyNotification) {
+                    fileRegionChunkPendingNotification = false;
+                    releasePendingZeroCopyWriteBatch();
+                    return true;
+                }
+
+                if (op == Native.IORING_OP_READ) {
+                    if (res == Native.ERRNO_ECANCELED_NEGATIVE) {
+                        releaseFileRegionChunkBuf();
+                        return true;
+                    }
+                    if (res < 0) {
+                        int result = ioResult("io_uring read", res);
+                        throw new ChannelException("io_uring read returned " + result
+                                + " while loading a DefaultFileRegion chunk");
+                    }
+                    assert buf != null;
+                    if (res == 0) {
+                        validateFileRegion(region.fileRegion, region.readTransferred());
+                        throw new ChannelException("io_uring read produced 0 bytes (count="
+                                + region.count() + ", transferred=" + region.readTransferred() + ')');
+                    }
+                    buf.writerIndex(buf.writerIndex() + res);
+                    region.advanceReadTransferred(res);
+                    if (submitFileRegionChunk(fd().intValue(), registration(), true) != 0) {
+                        incrementOutstandingWrites();
+                    }
+                    return true;
+                }
+
+                if (res == Native.ERRNO_ECANCELED_NEGATIVE) {
+                    if (zeroCopyWrite && more && buf != null) {
+                        fileRegionChunkPendingNotification = true;
+                        retainFileRegionChunkForNotification(buf);
+                    }
+                    releaseFileRegionChunkBuf();
+                    return true;
+                }
+
+                if (zeroCopyWrite && more && buf != null) {
+                    fileRegionChunkPendingNotification = true;
+                    retainFileRegionChunkForNotification(buf);
+                }
+
+                if (res >= 0) {
+                    assert buf != null;
+                    buf.skipBytes(res);
+                    region.advanceTransferred(res);
+                    channelOutboundBuffer.progress(res);
+                    if (!buf.isReadable()) {
+                        releaseFileRegionChunkBuf();
+                        if (region.transferred() >= region.count()) {
+                            channelOutboundBuffer.remove();
+                        }
+                    } else {
+                        return false;
+                    }
+                } else if (ioResult("io_uring write", res) == 0) {
+                    return false;
+                }
+            } catch (Throwable cause) {
+                releaseFileRegionChunkBuf();
+                handleWriteError(cause);
+            }
+            return true;
+        }
+
         @Override
         boolean writeComplete0(byte op, int res, int flags, short data, int outstanding) {
             if ((flags & Native.IORING_CQE_F_NOTIF) == 0) {
@@ -673,10 +830,21 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
                 writeOpCode = 0;
             }
             ChannelOutboundBuffer channelOutboundBuffer = unsafe().outboundBuffer();
+            if (fileRegionChunkPendingNotification && op == Native.IORING_OP_SEND_ZC
+                    && (flags & Native.IORING_CQE_F_NOTIF) != 0) {
+                fileRegionChunkPendingNotification = false;
+                releasePendingZeroCopyWriteBatch();
+                return true;
+            }
             Object current = channelOutboundBuffer.current();
             if (current instanceof IoUringFileRegion) {
                 IoUringFileRegion fileRegion = (IoUringFileRegion) current;
                 return handleWriteCompleteFileRegion(channelOutboundBuffer, fileRegion, res, data);
+            }
+
+            if (current instanceof IoUringReadFileRegion) {
+                return handleWriteCompleteDefaultFileRegion(
+                        channelOutboundBuffer, (IoUringReadFileRegion) current, op, res, flags);
             }
 
             if (current instanceof FileRegion) {

@@ -83,15 +83,24 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
         private Queue<Object> zcWriteQueue;
 
         @Override
+        protected IoUringIoOps newSendIoOps(int fd, ByteBuf buf, boolean allowZeroCopy) {
+            if (allowZeroCopy && IoUring.isSendZcSupported()) {
+                int length = buf.readableBytes();
+                if (((IoUringSocketChannelConfig) config()).shouldWriteZeroCopy(length)) {
+                    long address = IoUring.memoryAddress(buf) + buf.readerIndex();
+                    return IoUringIoOps.newSendZc(fd, address, length, 0, nextOpsId(), 0);
+                }
+            }
+            return super.newSendIoOps(fd, buf, false);
+        }
+
+        @Override
         protected int scheduleWriteSingle(Object msg) {
             assert writeId == 0;
 
             if (IoUring.isSendZcSupported() && msg instanceof ByteBuf) {
-                ByteBuf buf = (ByteBuf) msg;
-                int length = buf.readableBytes();
-                if (((IoUringSocketChannelConfig) config()).shouldWriteZeroCopy(length)) {
-                    long address = IoUring.memoryAddress(buf) + buf.readerIndex();
-                    IoUringIoOps ops = IoUringIoOps.newSendZc(fd().intValue(), address, length, 0, nextOpsId(), 0);
+                IoUringIoOps ops = newSendIoOps(fd().intValue(), (ByteBuf) msg, true);
+                if (ops.opcode() == Native.IORING_OP_SEND_ZC) {
                     byte opCode = ops.opcode();
                     writeId = registration().submit(ops);
                     writeOpCode = opCode;
@@ -183,9 +192,26 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
         boolean writeComplete0(byte op, int res, int flags, short data, int outstanding) {
             ChannelOutboundBuffer channelOutboundBuffer = unsafe().outboundBuffer();
             if (op == Native.IORING_OP_SEND_ZC || op == Native.IORING_OP_SENDMSG_ZC) {
+                Object current = channelOutboundBuffer == null ? null : channelOutboundBuffer.current();
+                if (current instanceof IoUringReadFileRegion || hasPendingFileRegionChunkNotification()) {
+                    return super.writeComplete0(op, res, flags, data, outstanding);
+                }
                 return handleWriteCompleteZeroCopy(op, channelOutboundBuffer, res, flags);
             }
             return super.writeComplete0(op, res, flags, data, outstanding);
+        }
+
+        @Override
+        protected void retainFileRegionChunkForNotification(ByteBuf buf) {
+            ensureZcWriteQueue();
+            zcWriteQueue.add(buf);
+            buf.retain();
+            zcWriteQueue.add(ZC_BATCH_MARKER);
+        }
+
+        @Override
+        protected void releasePendingZeroCopyWriteBatch() {
+            releaseZeroCopyWriteBatch();
         }
 
         private boolean handleWriteCompleteZeroCopy(byte op, ChannelOutboundBuffer channelOutboundBuffer,
@@ -204,9 +230,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                     // which will let us know that we can release the buffer(s). In this case let's retain the
                     // buffer(s) once and store it in an internal queue. Once we receive the notification we will
                     // call release() on the buffer(s) as it's not used by the kernel anymore.
-                    if (zcWriteQueue == null) {
-                        zcWriteQueue = new ArrayDeque<>(8);
-                    }
+                    ensureZcWriteQueue();
                 }
                 if (res >= 0) {
                     if (more) {
@@ -277,20 +301,29 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                     }
                 }
             } else {
-                if (zcWriteQueue != null) {
-                    for (;;) {
-                        Object queued = zcWriteQueue.remove();
-                        assert queued != null;
-                        if (queued == ZC_BATCH_MARKER) {
-                            // Done releasing the buffers of the zero-copy batch.
-                            break;
-                        }
-                        // The buffer can now be released.
-                        ((ByteBuf) queued).release();
-                    }
-                }
+                releaseZeroCopyWriteBatch();
             }
             return true;
+        }
+
+        private void ensureZcWriteQueue() {
+            if (zcWriteQueue == null) {
+                zcWriteQueue = new ArrayDeque<>(8);
+            }
+        }
+
+        private void releaseZeroCopyWriteBatch() {
+            if (zcWriteQueue == null) {
+                return;
+            }
+            for (;;) {
+                Object queued = zcWriteQueue.remove();
+                assert queued != null;
+                if (queued == ZC_BATCH_MARKER) {
+                    return;
+                }
+                ((ByteBuf) queued).release();
+            }
         }
 
         private void addFlushedToZcWriteQueue(ChannelOutboundBuffer channelOutboundBuffer) throws Exception {

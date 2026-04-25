@@ -49,6 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class IoUringSocketFileRegionTest extends SocketFileRegionTest {
+    private static final String FORCE_ASYNC_DEFAULT_FILE_REGION_PROPERTY =
+            "io.netty.iouring.forceAsyncDefaultFileRegion";
 
     // Configured chunk size for the io_uring generic FileRegion fallback. Reads and clamps the
     // same system property the transport does so the test stays accurate if an operator
@@ -95,6 +97,28 @@ public class IoUringSocketFileRegionTest extends SocketFileRegionTest {
             @Override
             public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
                 testTwoCustomFileRegionsWithChunking(serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    @Test
+    public void testDefaultFileRegionAsyncReadPath(TestInfo testInfo) throws Throwable {
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                testDefaultFileRegionAsyncReadPath(serverBootstrap, bootstrap);
+            }
+        });
+    }
+
+    @Test
+    public void testDefaultFileRegionAsyncReadPathWithSendZc(TestInfo testInfo) throws Throwable {
+        assumeTrue(IoUring.isSendZcSupported(), "send_zc is not supported by this kernel");
+        run(testInfo, new Runner<ServerBootstrap, Bootstrap>() {
+            @Override
+            public void run(ServerBootstrap serverBootstrap, Bootstrap bootstrap) throws Throwable {
+                bootstrap.option(IoUringChannelOption.IO_URING_WRITE_ZERO_COPY_THRESHOLD, 0);
+                testDefaultFileRegionAsyncReadPath(serverBootstrap, bootstrap);
             }
         });
     }
@@ -190,6 +214,57 @@ public class IoUringSocketFileRegionTest extends SocketFileRegionTest {
         assertTrue(firstRegion.transferToCalls.get() >= minFirstCalls,
                 "Expected at least " + minFirstCalls + " transferTo calls for the first (chunked) region, got "
                         + firstRegion.transferToCalls.get());
+    }
+
+    private static void testDefaultFileRegionAsyncReadPath(ServerBootstrap sb, Bootstrap cb) throws Throwable {
+        byte[] firstPayload = randomBytes(CHUNKING_REGION_SIZE);
+        byte[] secondPayload = randomBytes(8 * 1024);
+        byte[] combined = new byte[firstPayload.length + secondPayload.length];
+        System.arraycopy(firstPayload, 0, combined, 0, firstPayload.length);
+        System.arraycopy(secondPayload, 0, combined, firstPayload.length, secondPayload.length);
+
+        File firstFile = writeTempFile(firstPayload);
+        File secondFile = writeTempFile(secondPayload);
+
+        ReceivingHandler sh = new ReceivingHandler(combined);
+        sb.childOption(ChannelOption.AUTO_READ, true);
+        cb.option(ChannelOption.AUTO_READ, true);
+        sb.childHandler(sh);
+        cb.handler(new SimpleChannelInboundHandler<Object>() {
+            @Override
+            protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
+                // drop
+            }
+        });
+
+        String oldValue = System.getProperty(FORCE_ASYNC_DEFAULT_FILE_REGION_PROPERTY);
+        System.setProperty(FORCE_ASYNC_DEFAULT_FILE_REGION_PROPERTY, Boolean.TRUE.toString());
+        Channel sc = null;
+        Channel cc = null;
+        try {
+            sc = sb.bind().sync().channel();
+            cc = cb.connect(sc.localAddress()).sync().channel();
+            cc.write(new DefaultFileRegion(new RandomAccessFile(firstFile, "r").getChannel(), 0, firstPayload.length))
+                    .addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE);
+            cc.writeAndFlush(new DefaultFileRegion(
+                    new RandomAccessFile(secondFile, "r").getChannel(), 0, secondPayload.length)).sync();
+            sh.awaitCompletion();
+        } finally {
+            if (oldValue == null) {
+                System.clearProperty(FORCE_ASYNC_DEFAULT_FILE_REGION_PROPERTY);
+            } else {
+                System.setProperty(FORCE_ASYNC_DEFAULT_FILE_REGION_PROPERTY, oldValue);
+            }
+            if (cc != null) {
+                cc.close().sync();
+            }
+            if (sc != null) {
+                sc.close().sync();
+            }
+        }
+
+        assertNull(sh.exception.get());
+        assertEquals(combined.length, sh.counter);
     }
 
     private static byte[] randomBytes(int length) {
