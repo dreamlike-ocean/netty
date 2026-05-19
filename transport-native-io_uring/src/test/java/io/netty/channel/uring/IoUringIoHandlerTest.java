@@ -24,8 +24,14 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledIf;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -60,6 +66,72 @@ public class IoUringIoHandlerTest {
         handler.initialize();
         handler.prepareToDestroy();
         handler.destroy();
+    }
+
+    @Test
+    public void testWakeupRaceWithShutdownDoesNotWriteToClosedEventFd() throws Exception {
+        Thread executorThread = Thread.currentThread();
+        IoHandlerFactory ioHandlerFactory = IoUringIoHandler.newFactory();
+        IoHandler handler = ioHandlerFactory.newHandler(new ThreadAwareExecutor() {
+
+            @Override
+            public boolean isExecutorThread(Thread thread) {
+                return thread == executorThread;
+            }
+
+            @Override
+            public void execute(Runnable command) {
+                command.run();
+            }
+        });
+        handler.initialize();
+
+        CountDownLatch wakeupClaimed = new CountDownLatch(1);
+        AtomicBoolean releaseWakeup = new AtomicBoolean();
+        AtomicBoolean hookUsed = new AtomicBoolean();
+        AtomicReference<Throwable> wakeupFailure = new AtomicReference<>();
+
+        IoUringIoHandler.wakeupBeforeEventFdWriteHook = () -> {
+            if (hookUsed.compareAndSet(false, true)) {
+                wakeupClaimed.countDown();
+                while (!releaseWakeup.get()) {
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10));
+                }
+            }
+        };
+
+        Thread wakeupThread = new Thread(() -> {
+            try {
+                handler.wakeup();
+            } catch (Throwable cause) {
+                wakeupFailure.set(cause);
+            }
+        }, "io_uring-wakeup-race-reproducer");
+
+        boolean destroyed = false;
+        try {
+            wakeupThread.start();
+            assertTrue(wakeupClaimed.await(5, TimeUnit.SECONDS));
+
+            handler.prepareToDestroy();
+            handler.destroy();
+            destroyed = true;
+
+            releaseWakeup.set(true);
+            LockSupport.unpark(wakeupThread);
+            wakeupThread.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertFalse(wakeupThread.isAlive());
+            assertNull(wakeupFailure.get(), "wakeup must not write to a closed eventfd");
+        } finally {
+            IoUringIoHandler.wakeupBeforeEventFdWriteHook = null;
+            releaseWakeup.set(true);
+            LockSupport.unpark(wakeupThread);
+            if (!destroyed) {
+                handler.prepareToDestroy();
+                handler.destroy();
+            }
+        }
     }
 
     @Test

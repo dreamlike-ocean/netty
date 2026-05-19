@@ -52,6 +52,7 @@ import static java.util.Objects.requireNonNull;
  */
 public final class IoUringIoHandler implements IoHandler {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(IoUringIoHandler.class);
+    static volatile Runnable wakeupBeforeEventFdWriteHook;
 
     private final RingBuffer ringBuffer;
     private final IntObjectMap<IoUringBufferRing> registeredIoUringBufferRing;
@@ -710,6 +711,10 @@ public final class IoUringIoHandler implements IoHandler {
     public void wakeup() {
         if (!executor.isExecutorThread(Thread.currentThread()) &&
                 !eventfdAsyncNotify.getAndSet(true)) {
+            Runnable hook = wakeupBeforeEventFdWriteHook;
+            if (hook != null) {
+                hook.run();
+            }
             // write to the eventfd which will then trigger an eventfd read completion.
             Native.eventFdWrite(eventfd.intValue(), 1L);
         }
