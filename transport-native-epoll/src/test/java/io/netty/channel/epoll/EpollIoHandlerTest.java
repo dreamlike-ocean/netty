@@ -24,8 +24,11 @@ import io.netty.channel.unix.FileDescriptor;
 import io.netty.util.concurrent.ThreadAwareExecutor;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -85,5 +88,65 @@ public class EpollIoHandlerTest {
         handler.destroy();
         socket.close();
         assertNull(eventRef.get());
+    }
+
+    @Test
+    public void testRunUsesExternalReadinessFdWait() {
+        IoHandlerFactory ioHandlerFactory = EpollIoHandler.newFactory();
+        IoHandler handler = ioHandlerFactory.newHandler(new ThreadAwareExecutor() {
+
+            @Override
+            public boolean isExecutorThread(Thread thread) {
+                return true;
+            }
+
+            @Override
+            public void execute(Runnable command) {
+                command.run();
+            }
+        });
+        handler.initialize();
+
+        AtomicInteger waitCalls = new AtomicInteger();
+        AtomicInteger waitFd = new AtomicInteger();
+        AtomicLong waitTimeoutNanos = new AtomicLong();
+        try {
+            int handled = handler.run(new IoHandlerContext() {
+                @Override
+                public boolean canBlock() {
+                    return true;
+                }
+
+                @Override
+                public long delayNanos(long currentTimeNanos) {
+                    return 123;
+                }
+
+                @Override
+                public long deadlineNanos() {
+                    return System.nanoTime() + 123;
+                }
+
+                @Override
+                public IoHandlerContext.IoWaitMode ioWaitMode() {
+                    return IoHandlerContext.IoWaitMode.EXTERNAL_READINESS_FD;
+                }
+
+                @Override
+                public void waitForIoReady(int fd, long timeoutNanos) {
+                    waitCalls.incrementAndGet();
+                    waitFd.set(fd);
+                    waitTimeoutNanos.set(timeoutNanos);
+                }
+            });
+
+            assertEquals(0, handled);
+            assertEquals(1, waitCalls.get());
+            assertTrue(waitFd.get() > 0);
+            assertEquals(123, waitTimeoutNanos.get());
+        } finally {
+            handler.prepareToDestroy();
+            handler.destroy();
+        }
     }
 }

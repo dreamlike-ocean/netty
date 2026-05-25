@@ -17,6 +17,7 @@ package io.netty.channel.uring;
 
 import io.netty.channel.IoEvent;
 import io.netty.channel.IoHandler;
+import io.netty.channel.IoHandlerContext;
 import io.netty.channel.IoHandlerFactory;
 import io.netty.channel.IoRegistration;
 import io.netty.util.concurrent.ThreadAwareExecutor;
@@ -24,7 +25,10 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.DisabledIf;
 
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -122,6 +126,66 @@ public class IoUringIoHandlerTest {
         handler.initialize();
         handler.prepareToDestroy();
         handler.destroy();
+    }
+
+    @Test
+    public void testRunUsesExternalReadinessFdWait() {
+        IoHandlerFactory ioHandlerFactory = IoUringIoHandler.newFactory();
+        IoHandler handler = ioHandlerFactory.newHandler(new ThreadAwareExecutor() {
+
+            @Override
+            public boolean isExecutorThread(Thread thread) {
+                return true;
+            }
+
+            @Override
+            public void execute(Runnable command) {
+                command.run();
+            }
+        });
+        handler.initialize();
+
+        AtomicInteger waitCalls = new AtomicInteger();
+        AtomicInteger waitFd = new AtomicInteger();
+        AtomicLong waitTimeoutNanos = new AtomicLong();
+        try {
+            int handled = handler.run(new IoHandlerContext() {
+                @Override
+                public boolean canBlock() {
+                    return true;
+                }
+
+                @Override
+                public long delayNanos(long currentTimeNanos) {
+                    return 123;
+                }
+
+                @Override
+                public long deadlineNanos() {
+                    return System.nanoTime() + 123;
+                }
+
+                @Override
+                public IoHandlerContext.IoWaitMode ioWaitMode() {
+                    return IoHandlerContext.IoWaitMode.EXTERNAL_READINESS_FD;
+                }
+
+                @Override
+                public void waitForIoReady(int fd, long timeoutNanos) {
+                    waitCalls.incrementAndGet();
+                    waitFd.set(fd);
+                    waitTimeoutNanos.set(timeoutNanos);
+                }
+            });
+
+            assertEquals(0, handled);
+            assertEquals(1, waitCalls.get());
+            assertTrue(waitFd.get() > 0);
+            assertEquals(123, waitTimeoutNanos.get());
+        } finally {
+            handler.prepareToDestroy();
+            handler.destroy();
+        }
     }
 
     @Test

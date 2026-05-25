@@ -28,6 +28,7 @@ import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.Set;
 import java.util.concurrent.BlockingQueue;
@@ -40,6 +41,8 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.*;
@@ -276,6 +279,63 @@ public class ManualIoEventLoopTest {
         });
         assertEquals(1, eventLoop.runNonBlockingTasks(0));
         assertTrue(executed.get());
+        eventLoop.shutdownGracefully();
+    }
+
+    @Test
+    public void testIoWaitModeDefaultsToInternalBlocking() {
+        AtomicReference<IoHandlerContext.IoWaitMode> waitMode = new AtomicReference<>();
+        ManualIoEventLoop eventLoop = new ManualIoEventLoop(Thread.currentThread(), executor ->
+                new TestIoHandler(new Semaphore(0)) {
+                    @Override
+                    public int run(IoHandlerContext context) {
+                        waitMode.set(context.ioWaitMode());
+                        return 0;
+                    }
+                });
+
+        assertEquals(0, eventLoop.run(1));
+        assertSame(IoHandlerContext.IoWaitMode.INTERNAL_BLOCKING, waitMode.get());
+        eventLoop.shutdownGracefully();
+    }
+
+    @Test
+    public void testIoWaitModeUsesExternalReadinessFdForBlockingRuns() {
+        AtomicReference<IoHandlerContext.IoWaitMode> nonBlockingWaitMode = new AtomicReference<>();
+        AtomicReference<IoHandlerContext.IoWaitMode> blockingWaitMode = new AtomicReference<>();
+        AtomicInteger waitFd = new AtomicInteger();
+        AtomicLong waitTimeoutNanos = new AtomicLong();
+        AtomicInteger waitCalls = new AtomicInteger();
+        ManualIoEventLoop eventLoop = new ManualIoEventLoop(
+                null, Thread.currentThread(), executor -> new TestIoHandler(new Semaphore(0)) {
+                    @Override
+                    public int run(IoHandlerContext context) {
+                        if (context.canBlock()) {
+                            blockingWaitMode.set(context.ioWaitMode());
+                            try {
+                                context.waitForIoReady(8, 13);
+                            } catch (IOException e) {
+                                throw new AssertionError(e);
+                            }
+                        } else {
+                            nonBlockingWaitMode.set(context.ioWaitMode());
+                        }
+                        return 0;
+                    }
+                }, Ticker.systemTicker(), (fd, timeoutNanos) -> {
+                    waitFd.set(fd);
+                    waitTimeoutNanos.set(timeoutNanos);
+                    waitCalls.incrementAndGet();
+                });
+
+        assertEquals(0, eventLoop.runNow());
+        assertSame(IoHandlerContext.IoWaitMode.INTERNAL_BLOCKING, nonBlockingWaitMode.get());
+
+        assertEquals(0, eventLoop.run(1));
+        assertSame(IoHandlerContext.IoWaitMode.EXTERNAL_READINESS_FD, blockingWaitMode.get());
+        assertEquals(8, waitFd.get());
+        assertEquals(13, waitTimeoutNanos.get());
+        assertEquals(1, waitCalls.get());
         eventLoop.shutdownGracefully();
     }
 

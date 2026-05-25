@@ -18,12 +18,27 @@ package io.netty.channel;
 import io.netty.util.concurrent.MultithreadEventExecutorGroup;
 import io.netty.util.concurrent.ThreadAwareExecutor;
 
+import java.io.IOException;
+
 /**
  * The context for an {@link IoHandler} that is run by an {@link ThreadAwareExecutor}.
  * All methods  <strong>MUST</strong> be executed on the {@link ThreadAwareExecutor} thread
  * (which means {@link ThreadAwareExecutor#isExecutorThread(Thread)} (Thread)} must return {@code true}).
  */
 public interface IoHandlerContext {
+    enum IoWaitMode {
+        /**
+         * {@link IoHandler} should use its existing internal blocking path.
+         */
+        INTERNAL_BLOCKING,
+
+        /**
+         * {@link IoHandler} may split its wait path and ask the context to wait on the backend readiness file
+         * descriptor after it has submitted or flushed backend state.
+         */
+        EXTERNAL_READINESS_FD
+    }
+
     /**
      * Returns {@code true} if blocking for IO is allowed or if we should try to do a non-blocking request for IO to be
      * ready.
@@ -47,6 +62,33 @@ public interface IoHandlerContext {
      * @return deadline.
      */
     long deadlineNanos();
+
+    /**
+     * Returns the I/O wait mode requested by the current runner.
+     *
+     * @return the wait mode.
+     */
+    default IoWaitMode ioWaitMode() {
+        return IoWaitMode.INTERNAL_BLOCKING;
+    }
+
+    /**
+     * Wait until the backend readiness file descriptor is readable, or until {@code timeoutNanos} expires.
+     * <p>
+     * This method is only valid when {@link #ioWaitMode()} returns {@link IoWaitMode#EXTERNAL_READINESS_FD}.
+     * <p>
+     * The file descriptor is not a channel file descriptor. It is the backend aggregation file descriptor, such as an
+     * epoll file descriptor, kqueue file descriptor, io_uring ring file descriptor or selector file descriptor.
+     * <p>
+     * The caller must submit or flush all backend-specific pending state before invoking this method. After this method
+     * returns, the caller must only perform a non-blocking harvest.
+     *
+     * @param fd            backend readiness file descriptor.
+     * @param timeoutNanos  relative timeout in nanoseconds, {@code -1} to wait indefinitely, {@code 0} to not park.
+     */
+    default void waitForIoReady(int fd, long timeoutNanos) throws IOException {
+        throw new UnsupportedOperationException();
+    }
 
     /**
      * Reports the amount of time in nanoseconds that was spent actively processing I/O events.

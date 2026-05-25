@@ -18,6 +18,7 @@ package io.netty.channel.uring;
 import io.netty.channel.IoHandle;
 import io.netty.channel.IoHandler;
 import io.netty.channel.IoHandlerContext;
+import io.netty.channel.IoHandlerContext.IoWaitMode;
 import io.netty.channel.IoHandlerFactory;
 import io.netty.channel.IoOps;
 import io.netty.channel.IoRegistration;
@@ -171,8 +172,19 @@ public final class IoUringIoHandler implements IoHandler {
             if (eventfdReadSubmitted == 0) {
                 submitEventFdRead();
             }
-            long timeoutNanos = context.deadlineNanos() == -1 ? -1 : context.delayNanos(System.nanoTime());
-            submitAndWaitWithTimeout(submissionQueue, false, timeoutNanos);
+            long timeoutNanos = timeoutNanos(context);
+            if (context.ioWaitMode() == IoWaitMode.EXTERNAL_READINESS_FD) {
+                submitAndClearNow(submissionQueue);
+                if (!completionQueue.hasCompletions()) {
+                    try {
+                        context.waitForIoReady(ringBuffer.fd(), timeoutNanos);
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                }
+            } else {
+                submitAndWaitWithTimeout(submissionQueue, false, timeoutNanos);
+            }
         } else {
             // Even if we have some completions already pending we can still try to even fetch more.
             submitAndClearNow(submissionQueue);
@@ -189,6 +201,10 @@ public final class IoUringIoHandler implements IoHandler {
             processed = processCompletionsAndHandleOverflow(submissionQueue, completionQueue, this::handle);
         }
         return processed;
+    }
+
+    private static long timeoutNanos(IoHandlerContext context) {
+        return context.deadlineNanos() == -1L ? -1L : Math.max(0L, context.delayNanos(System.nanoTime()));
     }
 
     private boolean needSubmit(int sqFlags) {

@@ -20,6 +20,7 @@ import io.netty.channel.DefaultSelectStrategyFactory;
 import io.netty.channel.IoHandle;
 import io.netty.channel.IoHandler;
 import io.netty.channel.IoHandlerContext;
+import io.netty.channel.IoHandlerContext.IoWaitMode;
 import io.netty.channel.IoHandlerFactory;
 import io.netty.channel.IoOps;
 import io.netty.channel.IoRegistration;
@@ -173,10 +174,23 @@ public final class KQueueIoHandler implements IoHandler {
             return kqueueWaitNow();
         }
 
+        if (context.ioWaitMode() == IoWaitMode.EXTERNAL_READINESS_FD) {
+            int ready = kqueueWaitNow();
+            if (ready != 0 || !context.canBlock()) {
+                return ready;
+            }
+            context.waitForIoReady(kqueueFd.intValue(), timeoutNanos(context));
+            return kqueueWaitNow();
+        }
+
         long totalDelay = context.delayNanos(System.nanoTime());
         int delaySeconds = (int) min(totalDelay / 1000000000L, KQUEUE_MAX_TIMEOUT_SECONDS);
         int delayNanos = (int) (totalDelay % 1000000000L);
         return kqueueWait(delaySeconds, delayNanos);
+    }
+
+    private static long timeoutNanos(IoHandlerContext context) {
+        return context.deadlineNanos() == -1L ? -1L : Math.max(0L, context.delayNanos(System.nanoTime()));
     }
 
     private int kqueueWaitNow() throws IOException {

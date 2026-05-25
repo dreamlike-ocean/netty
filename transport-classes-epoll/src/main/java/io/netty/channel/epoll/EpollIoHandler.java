@@ -18,6 +18,7 @@ package io.netty.channel.epoll;
 import io.netty.channel.Channel;
 import io.netty.channel.DefaultSelectStrategyFactory;
 import io.netty.channel.IoHandlerContext;
+import io.netty.channel.IoHandlerContext.IoWaitMode;
 import io.netty.channel.IoHandle;
 import io.netty.channel.IoHandler;
 import io.netty.channel.IoHandlerFactory;
@@ -462,7 +463,13 @@ public class EpollIoHandler implements IoHandler {
                     nextWakeupNanos.set(curDeadlineNanos);
                     try {
                         if (context.canBlock()) {
-                            if (curDeadlineNanos == prevDeadlineNanos) {
+                            if (context.ioWaitMode() == IoWaitMode.EXTERNAL_READINESS_FD) {
+                                long timeoutNanos = curDeadlineNanos == NONE ?
+                                        -1L : Math.max(0L, context.delayNanos(System.nanoTime()));
+                                context.waitForIoReady(epollFd.intValue(), timeoutNanos);
+                                strategy = epollWaitNow();
+                                prevDeadlineNanos = NONE;
+                            } else if (curDeadlineNanos == prevDeadlineNanos) {
                                 // No timer activity needed
                                 strategy = epollWaitNoTimerChange();
                             } else {

@@ -26,6 +26,7 @@ import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.ThreadExecutorMap;
 
+import java.io.IOException;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
@@ -55,6 +56,9 @@ public class ManualIoEventLoop extends AbstractScheduledEventExecutor implements
     private static final int ST_SHUTTING_DOWN = 1;
     private static final int ST_SHUTDOWN = 2;
     private static final int ST_TERMINATED = 3;
+    private static final IoWaitCallback UNSUPPORTED_IO_WAIT = (fd, timeoutNanos) -> {
+        throw new UnsupportedOperationException();
+    };
 
     private final AtomicInteger state;
     private final Promise<?> terminationFuture = new DefaultPromise<Void>(GlobalEventExecutor.INSTANCE);
@@ -83,6 +87,8 @@ public class ManualIoEventLoop extends AbstractScheduledEventExecutor implements
     private final AtomicReference<Thread> owningThread;
     private final IoHandler handler;
     private final Ticker ticker;
+    private final IoHandlerContext.IoWaitMode ioWaitMode;
+    private final IoWaitCallback ioWaitCallback;
 
     private volatile long gracefulShutdownQuietPeriod;
     private volatile long gracefulShutdownTimeout;
@@ -96,6 +102,11 @@ public class ManualIoEventLoop extends AbstractScheduledEventExecutor implements
      */
     protected boolean canBlock() {
         return true;
+    }
+
+    @FunctionalInterface
+    public interface IoWaitCallback {
+        void waitForIoReady(int fd, long timeoutNanos) throws IOException;
     }
 
     /**
@@ -147,10 +158,40 @@ public class ManualIoEventLoop extends AbstractScheduledEventExecutor implements
      *                          {@link #wakeup()} this event loop manually.
      */
     public ManualIoEventLoop(IoEventLoopGroup parent, Thread owningThread, IoHandlerFactory factory, Ticker ticker) {
+        this(parent, owningThread, factory, ticker, IoHandlerContext.IoWaitMode.INTERNAL_BLOCKING, UNSUPPORTED_IO_WAIT);
+    }
+
+    /**
+     * Create a new {@link IoEventLoop} that is owned by the user and so needs to be driven by the user with the given
+     * {@link Thread}. This means that the user is responsible to call either {@link #runNow()} or
+     * {@link #run(long)} to execute IO or tasks that were submitted to this {@link IoEventLoop}.
+     *
+     * @param parent            the parent {@link IoEventLoopGroup} or {@code null} if no parent.
+     * @param owningThread      the {@link Thread} that executes the IO and tasks for this {@link IoEventLoop}. The
+     *                          user will use this {@link Thread} to call {@link #runNow()} or {@link #run(long)} to
+     *                          make progress. If {@code null}, must be set later using
+     *                          {@link #setOwningThread(Thread)}.
+     * @param factory           the {@link IoHandlerFactory} that will be used to create the {@link IoHandler} that is
+     *                          used by this {@link IoEventLoop}.
+     * @param ticker            The {@link #ticker()} to use for this event loop. Note that the {@link IoHandler} does
+     *                          not use the ticker, so if the ticker advances faster than system time, you may have to
+     *                          {@link #wakeup()} this event loop manually.
+     * @param ioWaitCallback    callback to wait on backend readiness file descriptors outside the {@link IoHandler}.
+     */
+    public ManualIoEventLoop(IoEventLoopGroup parent, Thread owningThread, IoHandlerFactory factory, Ticker ticker,
+                             IoWaitCallback ioWaitCallback) {
+        this(parent, owningThread, factory, ticker, IoHandlerContext.IoWaitMode.EXTERNAL_READINESS_FD,
+                ObjectUtil.checkNotNull(ioWaitCallback, "ioWaitCallback"));
+    }
+
+    private ManualIoEventLoop(IoEventLoopGroup parent, Thread owningThread, IoHandlerFactory factory, Ticker ticker,
+                              IoHandlerContext.IoWaitMode ioWaitMode, IoWaitCallback ioWaitCallback) {
         this.parent = parent;
         this.owningThread = new AtomicReference<>(owningThread);
         this.handler = factory.newHandler(this);
         this.ticker = Objects.requireNonNull(ticker, "ticker");
+        this.ioWaitMode = ObjectUtil.checkNotNull(ioWaitMode, "ioWaitMode");
+        this.ioWaitCallback = ObjectUtil.checkNotNull(ioWaitCallback, "ioWaitCallback");
         state = new AtomicInteger(ST_STARTED);
     }
 
@@ -676,6 +717,18 @@ public class ManualIoEventLoop extends AbstractScheduledEventExecutor implements
                 return now + maxBlockingNanos;
             }
             return next;
+        }
+
+        @Override
+        public IoHandlerContext.IoWaitMode ioWaitMode() {
+            assert inEventLoop();
+            return ioWaitMode;
+        }
+
+        @Override
+        public void waitForIoReady(int fd, long timeoutNanos) throws IOException {
+            assert inEventLoop();
+            ioWaitCallback.waitForIoReady(fd, timeoutNanos);
         }
     }
 }
