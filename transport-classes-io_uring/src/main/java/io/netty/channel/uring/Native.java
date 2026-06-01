@@ -323,6 +323,7 @@ final class Native {
     static final int IOSQE_IO_DRAIN = NativeStaticallyReferencedJniMethods.iosqeDrain();
     static final int IOSQE_BUFFER_SELECT = NativeStaticallyReferencedJniMethods.iosqeBufferSelect();
     static final int IOSQE_CQE_SKIP_SUCCESS = 1 << 6;
+    static final int IORING_ASYNC_CANCEL_ALL = 1 << 0;
     static final int MSG_DONTWAIT = NativeStaticallyReferencedJniMethods.msgDontwait();
     static final int MSG_FASTOPEN = NativeStaticallyReferencedJniMethods.msgFastopen();
     static final int SOL_UDP = NativeStaticallyReferencedJniMethods.solUdp();
@@ -463,6 +464,11 @@ final class Native {
 
     static boolean isAcceptMultishotSupported(IoUringProbe probe) {
         // IORING_OP_SOCKET was added in the same release (5.19);
+        return ioUringProbe(probe, new int[] { Native.IORING_OP_SOCKET });
+    }
+
+    static boolean isAsyncCancelAllSupported(IoUringProbe probe) {
+        // IORING_ASYNC_CANCEL_ALL was added in the same release (5.19).
         return ioUringProbe(probe, new int[] { Native.IORING_OP_SOCKET });
     }
 

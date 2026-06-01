@@ -194,6 +194,20 @@ final class SubmissionQueue {
         return (tail & ringMask) * SQE_SIZE;
     }
 
+    void ensureWritable(int sqeCount) {
+        checkClosed();
+        if (sqeCount > ringEntries) {
+            throw new IllegalArgumentException("sqeCount " + sqeCount + " exceeds ring entries " + ringEntries);
+        }
+        if (remaining() < sqeCount) {
+            // We need these SQEs to be added as one contiguous batch, so make room before the first enqueue.
+            submit();
+        }
+        if (remaining() < sqeCount) {
+            throw new RuntimeException("SQ ring does not have enough room for " + sqeCount + " SQEs");
+        }
+    }
+
     long addNop(byte flags, long udata) {
         return addNop(flags, 0, udata);
     }
