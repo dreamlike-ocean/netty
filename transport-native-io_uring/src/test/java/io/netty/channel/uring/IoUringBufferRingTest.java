@@ -27,6 +27,7 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
+import io.netty.channel.socket.DatagramPacket;
 import io.netty.util.NetUtil;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -39,8 +40,10 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -173,6 +176,246 @@ public class IoUringBufferRingTest {
         group.shutdownGracefully();
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    public void testDatagramProviderBufferRead(boolean incremental) throws InterruptedException {
+        if (incremental) {
+            assumeTrue(IoUring.isRegisterBufferRingIncSupported());
+        }
+        final BlockingQueue<DatagramPacket> packets = new LinkedBlockingQueue<>();
+        final BlockingQueue<Throwable> exceptions = new LinkedBlockingQueue<>();
+        IoUringIoHandlerConfig ioUringIoHandlerConfiguration = new IoUringIoHandlerConfig();
+        IoUringBufferRingConfig bufferRingConfig =
+                IoUringBufferRingConfig.builder()
+                        .bufferGroupId((short) 1)
+                        .bufferRingSize((short) 16)
+                        .batchSize(8)
+                        .incremental(incremental)
+                        .allocator(new IoUringFixedBufferRingAllocator(1024))
+                        .batchAllocation(false)
+                        .build();
+        ioUringIoHandlerConfiguration.setBufferRingConfig(bufferRingConfig);
+
+        MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1,
+                IoUringIoHandler.newFactory(ioUringIoHandlerConfiguration)
+        );
+        Channel serverChannel = null;
+        Channel clientChannel = null;
+        try {
+            Bootstrap serverBootstrap = new Bootstrap();
+            serverChannel = serverBootstrap.group(group)
+                    .channel(IoUringDatagramChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter() {
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                            packets.add((DatagramPacket) msg);
+                        }
+
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                            exceptions.add(cause);
+                        }
+                    })
+                    .option(IoUringChannelOption.IO_URING_BUFFER_GROUP_ID, bufferRingConfig.bufferGroupId())
+                    .option(IoUringChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE, 0)
+                    .bind(NetUtil.LOCALHOST, 0)
+                    .syncUninterruptibly().channel();
+
+            Bootstrap clientBootstrap = new Bootstrap();
+            clientChannel = clientBootstrap.group(group)
+                    .channel(IoUringDatagramChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter())
+                    .bind(NetUtil.LOCALHOST, 0)
+                    .syncUninterruptibly().channel();
+
+            InetSocketAddress recipient = (InetSocketAddress) serverChannel.localAddress();
+            sendAndRecvDatagram(clientChannel, recipient, "netty", packets, exceptions);
+            sendAndRecvDatagram(clientChannel, recipient, "", packets, exceptions);
+            sendAndRecvDatagram(clientChannel, recipient, "io_uring", packets, exceptions);
+            sendAndRecvDatagram(clientChannel, recipient, "provider-buffer", packets, exceptions);
+        } finally {
+            if (serverChannel != null) {
+                serverChannel.close().syncUninterruptibly();
+            }
+            if (clientChannel != null) {
+                clientChannel.close().syncUninterruptibly();
+            }
+            DatagramPacket packet;
+            while ((packet = packets.poll()) != null) {
+                packet.release();
+            }
+            group.shutdownGracefully();
+        }
+    }
+
+    @Test
+    public void testDatagramProviderBufferReadFailsIfMultishotMetadataDoesNotFit() throws InterruptedException {
+        assumeTrue(IoUring.isRecvMultishotEnabled());
+        assumeTrue(IoUring.isRegisterBufferRingIncSupported());
+        assertDatagramProviderBufferReadFailure(Integer.BYTES * 4 - 1, "netty", "too small");
+    }
+
+    @Test
+    public void testDatagramProviderBufferReadFailsIfMultishotPayloadIsTruncated() throws InterruptedException {
+        assumeTrue(IoUring.isRecvMultishotEnabled());
+        assumeTrue(IoUring.isRegisterBufferRingIncSupported());
+        assertDatagramProviderBufferReadFailure(64, asciiString(128), "truncated datagram");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    public void testDatagramProviderBufferReadSwitchesToRecvmsgBatching(boolean incremental)
+            throws InterruptedException {
+        if (incremental) {
+            assumeTrue(IoUring.isRegisterBufferRingIncSupported());
+        }
+        final BlockingQueue<DatagramPacket> packets = new LinkedBlockingQueue<>();
+        final BlockingQueue<Throwable> exceptions = new LinkedBlockingQueue<>();
+        IoUringIoHandlerConfig ioUringIoHandlerConfiguration = new IoUringIoHandlerConfig();
+        IoUringBufferRingConfig bufferRingConfig =
+                IoUringBufferRingConfig.builder()
+                        .bufferGroupId((short) 1)
+                        .bufferRingSize((short) 16)
+                        .batchSize(8)
+                        .incremental(incremental)
+                        .allocator(new IoUringFixedBufferRingAllocator(96))
+                        .batchAllocation(false)
+                        .build();
+        ioUringIoHandlerConfiguration.setBufferRingConfig(bufferRingConfig);
+
+        MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1,
+                IoUringIoHandler.newFactory(ioUringIoHandlerConfiguration)
+        );
+        Channel serverChannel = null;
+        Channel clientChannel = null;
+        try {
+            Bootstrap serverBootstrap = new Bootstrap();
+            serverChannel = serverBootstrap.group(group)
+                    .channel(IoUringDatagramChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter() {
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                            packets.add((DatagramPacket) msg);
+                        }
+
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                            exceptions.add(cause);
+                        }
+                    })
+                    .option(IoUringChannelOption.IO_URING_BUFFER_GROUP_ID, bufferRingConfig.bufferGroupId())
+                    .option(IoUringChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE, 0)
+                    .bind(NetUtil.LOCALHOST, 0)
+                    .syncUninterruptibly().channel();
+
+            Bootstrap clientBootstrap = new Bootstrap();
+            clientChannel = clientBootstrap.group(group)
+                    .channel(IoUringDatagramChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter())
+                    .bind(NetUtil.LOCALHOST, 0)
+                    .syncUninterruptibly().channel();
+
+            InetSocketAddress recipient = (InetSocketAddress) serverChannel.localAddress();
+            sendAndRecvDatagram(clientChannel, recipient, "netty", packets, exceptions);
+
+            final Channel server = serverChannel;
+            server.eventLoop().submit(() ->
+                    server.config().setOption(IoUringChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE, 512))
+                    .syncUninterruptibly();
+            server.eventLoop().schedule(() -> { }, 50, TimeUnit.MILLISECONDS).syncUninterruptibly();
+
+            sendAndRecvDatagram(clientChannel, recipient, asciiString(256), packets, exceptions);
+        } finally {
+            if (serverChannel != null) {
+                serverChannel.close().syncUninterruptibly();
+            }
+            if (clientChannel != null) {
+                clientChannel.close().syncUninterruptibly();
+            }
+            DatagramPacket packet;
+            while ((packet = packets.poll()) != null) {
+                packet.release();
+            }
+            group.shutdownGracefully();
+        }
+    }
+
+    private static void assertDatagramProviderBufferReadFailure(int bufferSize, String message,
+                                                               String expectedMessagePart)
+            throws InterruptedException {
+        final BlockingQueue<DatagramPacket> packets = new LinkedBlockingQueue<>();
+        final BlockingQueue<Throwable> exceptions = new LinkedBlockingQueue<>();
+        IoUringIoHandlerConfig ioUringIoHandlerConfiguration = new IoUringIoHandlerConfig();
+        IoUringBufferRingConfig bufferRingConfig =
+                IoUringBufferRingConfig.builder()
+                        .bufferGroupId((short) 1)
+                        .bufferRingSize((short) 16)
+                        .batchSize(8)
+                        .incremental(true)
+                        .allocator(new IoUringFixedBufferRingAllocator(bufferSize))
+                        .batchAllocation(false)
+                        .build();
+        ioUringIoHandlerConfiguration.setBufferRingConfig(bufferRingConfig);
+
+        MultiThreadIoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1,
+                IoUringIoHandler.newFactory(ioUringIoHandlerConfiguration)
+        );
+        Channel serverChannel = null;
+        Channel clientChannel = null;
+        ByteBuf writeBuffer = Unpooled.directBuffer(message.length());
+        try {
+            Bootstrap serverBootstrap = new Bootstrap();
+            serverChannel = serverBootstrap.group(group)
+                    .channel(IoUringDatagramChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter() {
+                        @Override
+                        public void channelRead(ChannelHandlerContext ctx, Object msg) {
+                            packets.add((DatagramPacket) msg);
+                        }
+
+                        @Override
+                        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+                            exceptions.add(cause);
+                        }
+                    })
+                    .option(IoUringChannelOption.IO_URING_BUFFER_GROUP_ID, bufferRingConfig.bufferGroupId())
+                    .option(IoUringChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE, 0)
+                    .bind(NetUtil.LOCALHOST, 0)
+                    .syncUninterruptibly().channel();
+
+            Bootstrap clientBootstrap = new Bootstrap();
+            clientChannel = clientBootstrap.group(group)
+                    .channel(IoUringDatagramChannel.class)
+                    .handler(new ChannelInboundHandlerAdapter())
+                    .bind(NetUtil.LOCALHOST, 0)
+                    .syncUninterruptibly().channel();
+
+            ByteBufUtil.writeAscii(writeBuffer, message);
+            InetSocketAddress recipient = (InetSocketAddress) serverChannel.localAddress();
+            clientChannel.writeAndFlush(new DatagramPacket(writeBuffer.retainedDuplicate(), recipient))
+                    .syncUninterruptibly();
+
+            Throwable cause = exceptions.poll(10, TimeUnit.SECONDS);
+            assertNotNull(cause);
+            assertTrue(cause instanceof IllegalStateException, cause.toString());
+            assertTrue(cause.getMessage().contains(expectedMessagePart), cause.getMessage());
+            assertTrue(packets.isEmpty());
+        } finally {
+            writeBuffer.release();
+            if (serverChannel != null) {
+                serverChannel.close().syncUninterruptibly();
+            }
+            if (clientChannel != null) {
+                clientChannel.close().syncUninterruptibly();
+            }
+            DatagramPacket packet;
+            while ((packet = packets.poll()) != null) {
+                packet.release();
+            }
+            group.shutdownGracefully();
+        }
+    }
+
     static boolean recvsendBundleEnabled() {
         return IoUring.isRecvsendBundleEnabled();
     }
@@ -257,6 +500,46 @@ public class IoUringBufferRingTest {
         assertEquals(writeBuffer.readableBytes(), readBuffer.readableBytes());
         assertTrue(ByteBufUtil.equals(writeBuffer, readBuffer));
         return readBuffer;
+    }
+
+    private void sendAndRecvDatagram(Channel clientChannel, InetSocketAddress recipient, String message,
+                                     BlockingQueue<DatagramPacket> packets, BlockingQueue<Throwable> exceptions)
+            throws InterruptedException {
+        ByteBuf writeBuffer = Unpooled.directBuffer(message.length());
+        ByteBuf expected = Unpooled.directBuffer(message.length());
+        try {
+            ByteBufUtil.writeAscii(writeBuffer, message);
+            ByteBufUtil.writeAscii(expected, message);
+            clientChannel.writeAndFlush(new DatagramPacket(writeBuffer.retainedDuplicate(), recipient))
+                    .syncUninterruptibly();
+            Throwable cause = exceptions.poll();
+            if (cause != null) {
+                throw new AssertionError(cause);
+            }
+            DatagramPacket packet = packets.poll(10, TimeUnit.SECONDS);
+            cause = exceptions.poll();
+            if (cause != null) {
+                throw new AssertionError(cause);
+            }
+            assertNotNull(packet);
+            try {
+                assertEquals(expected.readableBytes(), packet.content().readableBytes());
+                assertTrue(ByteBufUtil.equals(expected, packet.content()));
+            } finally {
+                packet.release();
+            }
+        } finally {
+            writeBuffer.release();
+            expected.release();
+        }
+    }
+
+    private static String asciiString(int length) {
+        StringBuilder builder = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            builder.append((char) ('a' + i % 26));
+        }
+        return builder.toString();
     }
 
     @Test

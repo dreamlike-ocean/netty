@@ -35,6 +35,7 @@ final class IoUringDatagramChannelConfig extends IoUringChannelConfig implements
     private static final RecvByteBufAllocator DEFAULT_RCVBUF_ALLOCATOR = new FixedRecvByteBufAllocator(2048);
     private boolean activeOnOpen;
     private volatile int maxDatagramSize;
+    private volatile short bufferGroupId = -1;
 
     IoUringDatagramChannelConfig(AbstractIoUringChannel channel) {
         super(channel);
@@ -52,7 +53,7 @@ final class IoUringDatagramChannelConfig extends IoUringChannelConfig implements
                 ChannelOption.IP_TOS, ChannelOption.DATAGRAM_CHANNEL_ACTIVE_ON_REGISTRATION,
                 IoUringChannelOption.SO_REUSEPORT, IoUringChannelOption.IP_FREEBIND,
                 IoUringChannelOption.IP_TRANSPARENT, IoUringChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE,
-                IoUringChannelOption.IP_MULTICAST_ALL);
+                IoUringChannelOption.IP_MULTICAST_ALL, IoUringChannelOption.IO_URING_BUFFER_GROUP_ID);
     }
 
     @SuppressWarnings({ "unchecked", "deprecation" })
@@ -100,6 +101,9 @@ final class IoUringDatagramChannelConfig extends IoUringChannelConfig implements
         if (option == IoUringChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE) {
             return (T) Integer.valueOf(getMaxDatagramPayloadSize());
         }
+        if (option == IoUringChannelOption.IO_URING_BUFFER_GROUP_ID) {
+            return (T) Short.valueOf(getBufferGroupId());
+        }
         if (option == IoUringChannelOption.IP_MULTICAST_ALL) {
             return (T) Boolean.valueOf(isIpMulticastAll());
         }
@@ -139,6 +143,8 @@ final class IoUringDatagramChannelConfig extends IoUringChannelConfig implements
             setIpTransparent((Boolean) value);
         } else if (option == IoUringChannelOption.MAX_DATAGRAM_PAYLOAD_SIZE) {
             setMaxDatagramPayloadSize((Integer) value);
+        } else if (option == IoUringChannelOption.IO_URING_BUFFER_GROUP_ID) {
+            setBufferGroupId((Short) value);
         } else if (option == IoUringChannelOption.IP_MULTICAST_ALL) {
             setIpMulticastAll((Boolean) value);
         } else {
@@ -487,7 +493,9 @@ final class IoUringDatagramChannelConfig extends IoUringChannelConfig implements
      * will enable it.
      */
     public IoUringDatagramChannelConfig setMaxDatagramPayloadSize(int maxDatagramSize) {
+        int oldMaxDatagramSize = this.maxDatagramSize;
         this.maxDatagramSize = ObjectUtil.checkPositiveOrZero(maxDatagramSize, "maxDatagramSize");
+        ((IoUringDatagramChannel) channel).maxDatagramPayloadSizeChanged(oldMaxDatagramSize, this.maxDatagramSize);
         return this;
     }
 
@@ -496,6 +504,15 @@ final class IoUringDatagramChannelConfig extends IoUringChannelConfig implements
      */
     public int getMaxDatagramPayloadSize() {
         return maxDatagramSize;
+    }
+
+    short getBufferGroupId() {
+        return bufferGroupId;
+    }
+
+    IoUringDatagramChannelConfig setBufferGroupId(short bufferGroupId) {
+        this.bufferGroupId = (short) ObjectUtil.checkPositiveOrZero(bufferGroupId, "bufferGroupId");
+        return this;
     }
 
     /**

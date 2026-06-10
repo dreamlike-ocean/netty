@@ -21,7 +21,11 @@ import io.netty.channel.unix.Buffer;
 import io.netty.util.internal.CleanableDirectBuffer;
 import io.netty.util.internal.PlatformDependent;
 
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -109,6 +113,18 @@ final class MsgHdrMemory {
                 cmsgDataOffset, segmentSize);
     }
 
+    void setRecvmsgProviderBuffer(LinuxSocket socket, int length) {
+        int addressLength = setSocketAddress(socket, null);
+        Iov.set(iovMemory, 0, length);
+        MsgHdr.set(msgHdrMemory, socketAddrMemory, addressLength, iovMemory, 1, cmsgDataMemory,
+                cmsgDataOffset, (short) 0);
+    }
+
+    void setRecvmsgMultishotProviderBuffer(LinuxSocket socket) {
+        int addressLength = setSocketAddress(socket, null);
+        MsgHdr.set(msgHdrMemory, socketAddrMemory, addressLength, 0, 0, 0, 0);
+    }
+
     void set(long iovArray, int length) {
         MsgHdr.set(msgHdrMemory, iovArray, length);
     }
@@ -156,16 +172,7 @@ final class MsgHdrMemory {
     }
 
     DatagramPacket get(IoUringDatagramChannel channel, IoUringIoHandler handler, ByteBuf buffer, int bytesRead) {
-        InetSocketAddress sender;
-        if (channel.socket.isIpv6()) {
-            byte[] ipv6Bytes = handler.inet6AddressArray();
-            byte[] ipv4bytes = handler.inet4AddressArray();
-
-            sender = SockaddrIn.getIPv6(socketAddrMemory, ipv6Bytes, ipv4bytes);
-        } else {
-            byte[] bytes = handler.inet4AddressArray();
-            sender = SockaddrIn.getIPv4(socketAddrMemory, bytes);
-        }
+        InetSocketAddress sender = sender(channel, handler, socketAddrMemory);
         long bufferAddress = Iov.getBufferAddress(iovMemory);
         int bufferLength = Iov.getBufferLength(iovMemory);
         // reconstruct the reader index based on the memoryAddress of the buffer and the bufferAddress that was used
@@ -176,6 +183,110 @@ final class MsgHdrMemory {
         ByteBuf slice = buffer.slice(readerIndex, bufferLength)
                 .writerIndex(bytesRead);
         return new DatagramPacket(slice.retain(), channel.localAddress(), sender);
+    }
+
+    DatagramPacket getWithProviderBuffer(IoUringDatagramChannel channel, IoUringIoHandler handler, ByteBuf buffer) {
+        InetSocketAddress sender = sender(channel, handler, socketAddrMemory);
+        return new DatagramPacket(buffer, channel.localAddress(), sender);
+    }
+
+    DatagramPacket getWithMultishotProviderBuffer(
+            IoUringDatagramChannel channel, IoUringIoHandler handler, ByteBuf buffer, int bytesRead) {
+        int readerIndex = buffer.readerIndex();
+        int msgNameLength = msgNameLength();
+        int msgControlLength = msgControlLength();
+        // Matches liburing's io_uring_recvmsg_validate / io_uring_recvmsg_payload:
+        // https://github.com/axboe/liburing/blame/master/src/include/liburing.h#L1198-L1263
+        int payloadOffset = Native.SIZEOF_IO_URING_RECVMSG_OUT + msgNameLength + msgControlLength;
+        if (bytesRead < payloadOffset) {
+            throw new IllegalStateException("io_uring recvmsg multishot metadata does not fit: payloadOffset=" +
+                    payloadOffset + ", bytesRead=" + bytesRead);
+        }
+
+        int payloadLength = getIntNative(buffer, readerIndex + Native.IO_URING_RECVMSG_OUT_OFFSETOF_PAYLOADLEN);
+        int msgFlags = getIntNative(buffer, readerIndex + Native.IO_URING_RECVMSG_OUT_OFFSETOF_FLAGS);
+
+        InetSocketAddress sender = sender(channel, handler, buffer,
+                readerIndex + Native.SIZEOF_IO_URING_RECVMSG_OUT);
+        int availablePayloadLength = bytesRead - payloadOffset;
+        if ((msgFlags & Native.MSG_TRUNC) != 0 || payloadLength > availablePayloadLength) {
+            // TODO: epoll does not expose msg_flags/MSG_TRUNC and currently delivers truncated datagrams.
+            // Revisit whether io_uring should keep failing fast here or align this with a common transport API.
+            throw new IllegalStateException("io_uring recvmsg multishot truncated datagram: payloadLength=" +
+                    payloadLength + ", availablePayloadLength=" + availablePayloadLength +
+                    ", bytesRead=" + bytesRead + ", msgFlags=" + msgFlags);
+        }
+        buffer.readerIndex(readerIndex + payloadOffset);
+        buffer.writerIndex(buffer.readerIndex() + payloadLength);
+        return new DatagramPacket(buffer, channel.localAddress(), sender);
+    }
+
+    private int msgNameLength() {
+        return msgHdrMemory.getInt(msgHdrMemory.position() + Native.MSGHDR_OFFSETOF_MSG_NAMELEN);
+    }
+
+    private int msgControlLength() {
+        int offset = msgHdrMemory.position() + Native.MSGHDR_OFFSETOF_MSG_CONTROLLEN;
+        if (Native.SIZEOF_SIZE_T == 4) {
+            return msgHdrMemory.getInt(offset);
+        }
+        assert Native.SIZEOF_SIZE_T == 8;
+        return (int) msgHdrMemory.getLong(offset);
+    }
+
+    private static int getIntNative(ByteBuf buffer, int index) {
+        return PlatformDependent.BIG_ENDIAN_NATIVE_ORDER ? buffer.getInt(index) : buffer.getIntLE(index);
+    }
+
+    private static InetSocketAddress sender(
+            IoUringDatagramChannel channel, IoUringIoHandler handler, ByteBuffer socketAddrMemory) {
+        InetSocketAddress sender;
+        if (channel.socket.isIpv6()) {
+            byte[] ipv6Bytes = handler.inet6AddressArray();
+            byte[] ipv4bytes = handler.inet4AddressArray();
+
+            sender = SockaddrIn.getIPv6(socketAddrMemory, ipv6Bytes, ipv4bytes);
+        } else {
+            byte[] bytes = handler.inet4AddressArray();
+            sender = SockaddrIn.getIPv4(socketAddrMemory, bytes);
+        }
+        return sender;
+    }
+
+    private static InetSocketAddress sender(
+            IoUringDatagramChannel channel, IoUringIoHandler handler, ByteBuf buffer, int socketAddrIndex) {
+        if (channel.socket.isIpv6()) {
+            byte[] ipv6Bytes = handler.inet6AddressArray();
+            byte[] ipv4Bytes = handler.inet4AddressArray();
+
+            int port = buffer.getShort(socketAddrIndex + Native.SOCKADDR_IN6_OFFSETOF_SIN6_PORT) & 0xFFFF;
+            int addressIndex = socketAddrIndex +
+                    Native.SOCKADDR_IN6_OFFSETOF_SIN6_ADDR + Native.IN6_ADDRESS_OFFSETOF_S6_ADDR;
+            buffer.getBytes(addressIndex, ipv6Bytes);
+            try {
+                if (PlatformDependent.equals(
+                        ipv6Bytes, 0, SockaddrIn.IPV4_MAPPED_IPV6_PREFIX, 0,
+                        SockaddrIn.IPV4_MAPPED_IPV6_PREFIX.length)) {
+                    System.arraycopy(ipv6Bytes, SockaddrIn.IPV4_MAPPED_IPV6_PREFIX.length,
+                            ipv4Bytes, 0, SockaddrIn.IPV4_ADDRESS_LENGTH);
+                    return new InetSocketAddress(Inet4Address.getByAddress(ipv4Bytes), port);
+                }
+                int scopeId = getIntNative(buffer, socketAddrIndex + Native.SOCKADDR_IN6_OFFSETOF_SIN6_SCOPE_ID);
+                return new InetSocketAddress(Inet6Address.getByAddress(null, ipv6Bytes, scopeId), port);
+            } catch (UnknownHostException ignore) {
+                return null;
+            }
+        }
+
+        byte[] bytes = handler.inet4AddressArray();
+        int port = buffer.getShort(socketAddrIndex + Native.SOCKADDR_IN_OFFSETOF_SIN_PORT) & 0xFFFF;
+        int addressIndex = socketAddrIndex + Native.SOCKADDR_IN_OFFSETOF_SIN_ADDR + Native.IN_ADDRESS_OFFSETOF_S_ADDR;
+        buffer.getBytes(addressIndex, bytes);
+        try {
+            return new InetSocketAddress(InetAddress.getByAddress(bytes), port);
+        } catch (UnknownHostException ignore) {
+            return null;
+        }
     }
 
     short idx() {

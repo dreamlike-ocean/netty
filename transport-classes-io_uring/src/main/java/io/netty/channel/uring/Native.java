@@ -139,12 +139,19 @@ final class Native {
     static final int MSGHDR_OFFSETOF_MSG_CONTROLLEN =
             NativeStaticallyReferencedJniMethods.msghdrOffsetofMsgControllen();
     static final int MSGHDR_OFFSETOF_MSG_FLAGS = NativeStaticallyReferencedJniMethods.msghdrOffsetofMsgFlags();
+    static final int SIZEOF_IO_URING_RECVMSG_OUT =
+            NativeStaticallyReferencedJniMethods.sizeofIoUringRecvmsgOut();
+    static final int IO_URING_RECVMSG_OUT_OFFSETOF_PAYLOADLEN =
+            NativeStaticallyReferencedJniMethods.ioUringRecvmsgOutOffsetofPayloadlen();
+    static final int IO_URING_RECVMSG_OUT_OFFSETOF_FLAGS =
+            NativeStaticallyReferencedJniMethods.ioUringRecvmsgOutOffsetofFlags();
     static final int POLLIN = NativeStaticallyReferencedJniMethods.pollin();
     static final int POLLOUT = NativeStaticallyReferencedJniMethods.pollout();
     static final int POLLRDHUP = NativeStaticallyReferencedJniMethods.pollrdhup();
     static final int ERRNO_ECANCELED_NEGATIVE = -NativeStaticallyReferencedJniMethods.ecanceled();
     static final int ERRNO_ETIME_NEGATIVE = -NativeStaticallyReferencedJniMethods.etime();
     static final int ERRNO_NOBUFS_NEGATIVE = -NativeStaticallyReferencedJniMethods.enobufs();
+    static final int ERRNO_EFAULT_NEGATIVE = -NativeStaticallyReferencedJniMethods.efault();
 
     static final int PAGE_SIZE = NativeStaticallyReferencedJniMethods.pageSize();
     static final int MAX_SKB_FRAGS = NativeStaticallyReferencedJniMethods.maxSkbFrags();
@@ -324,6 +331,7 @@ final class Native {
     static final int IOSQE_BUFFER_SELECT = NativeStaticallyReferencedJniMethods.iosqeBufferSelect();
     static final int IOSQE_CQE_SKIP_SUCCESS = 1 << 6;
     static final int MSG_DONTWAIT = NativeStaticallyReferencedJniMethods.msgDontwait();
+    static final int MSG_TRUNC = NativeStaticallyReferencedJniMethods.msgTrunc();
     static final int MSG_FASTOPEN = NativeStaticallyReferencedJniMethods.msgFastopen();
     static final int SOL_UDP = NativeStaticallyReferencedJniMethods.solUdp();
     static final int SOL_SOCKET = NativeStaticallyReferencedJniMethods.solSocket();

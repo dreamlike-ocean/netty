@@ -72,6 +72,10 @@ final class IoUringBufferRing {
         return !closed && !corrupted;
     }
 
+    boolean isIncremental() {
+        return incremental;
+    }
+
     void initialize() {
         // We already validated that batchSize is <= ring length.
         fill((short) 0, batchSize);
