@@ -20,6 +20,8 @@ import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.unix.Buffer;
 import io.netty.util.internal.CleanableDirectBuffer;
 import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -30,6 +32,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 final class MsgHdrMemory {
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(MsgHdrMemory.class);
+
     public static final int MSG_HDR_SIZE =
             Native.SIZEOF_MSGHDR + Native.SIZEOF_SOCKADDR_STORAGE + Native.SIZEOF_IOVEC + Native.CMSG_SPACE;
     private static final byte[] EMPTY_SOCKADDR_STORAGE = new byte[Native.SIZEOF_SOCKADDR_STORAGE];
@@ -210,11 +214,12 @@ final class MsgHdrMemory {
                 readerIndex + Native.SIZEOF_IO_URING_RECVMSG_OUT);
         int availablePayloadLength = bytesRead - payloadOffset;
         if ((msgFlags & Native.MSG_TRUNC) != 0 || payloadLength > availablePayloadLength) {
-            // TODO: epoll does not expose msg_flags/MSG_TRUNC and currently delivers truncated datagrams.
-            // Revisit whether io_uring should keep failing fast here or align this with a common transport API.
-            throw new IllegalStateException("io_uring recvmsg multishot truncated datagram: payloadLength=" +
-                    payloadLength + ", availablePayloadLength=" + availablePayloadLength +
-                    ", bytesRead=" + bytesRead + ", msgFlags=" + msgFlags);
+            if (logger.isDebugEnabled()) {
+                logger.debug("{} io_uring recvmsg multishot truncated datagram, consider increasing the buffer ring "
+                                + "chunk size: payloadLength={}, availablePayloadLength={}, bytesRead={}, msgFlags={}",
+                        channel, payloadLength, availablePayloadLength, bytesRead, msgFlags);
+            }
+            payloadLength = Math.min(payloadLength, availablePayloadLength);
         }
         buffer.readerIndex(readerIndex + payloadOffset);
         buffer.writerIndex(buffer.readerIndex() + payloadLength);

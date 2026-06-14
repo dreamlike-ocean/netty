@@ -309,20 +309,23 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
     }
 
     void maxDatagramPayloadSizeChanged(int oldMaxDatagramSize, int maxDatagramSize) {
-        if (oldMaxDatagramSize != 0 || maxDatagramSize == 0 || !isRegistered()) {
+        if (oldMaxDatagramSize == maxDatagramSize || !isRegistered()) {
             return;
         }
         if (eventLoop().inEventLoop()) {
-            switchToRecvmsgBatchingReads();
+            cancelCurrentRead();
         } else {
-            eventLoop().execute(this::switchToRecvmsgBatchingReads);
+            eventLoop().execute(this::cancelCurrentRead);
         }
     }
 
-    private void switchToRecvmsgBatchingReads() {
+    private void cancelCurrentRead() {
         assert eventLoop().inEventLoop();
-        if (config.getMaxDatagramPayloadSize() > 0 && cancelProviderBufferRead(registration())) {
-            read();
+        IoRegistration registration = registration();
+        if (readId != 0) {
+            cancelProviderBufferRead(registration);
+        } else {
+            cancel(registration, Native.IORING_OP_RECVMSG, recvmsgHdrs);
         }
     }
 
@@ -559,7 +562,8 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
                                 IoUringDatagramChannel.this, registration().attachment(), Unpooled.EMPTY_BUFFER);
                         pipeline.fireChannelRead(packet);
                     }
-                } else if (useBufferRing) {
+                } else {
+                    assert useBufferRing;
                     short bid = (short) (flags >> Native.IORING_CQE_BUFFER_SHIFT);
                     boolean more = (flags & Native.IORING_CQE_F_BUF_MORE) != 0;
                     int attemptedBytesRead = bufferRing.attemptedBytesRead(bid);
@@ -571,6 +575,7 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
                             packet = hdr.getWithMultishotProviderBuffer(
                                     IoUringDatagramChannel.this, registration().attachment(), buffer, res);
                             buffer = null;
+                            // meta data is not empty but payload is empty
                             allocHandle.lastBytesRead(Math.max(1, packet.content().readableBytes()));
                         } else if (hdr.hasPort(IoUringDatagramChannel.this)) {
                             packet = hdr.getWithProviderBuffer(
@@ -589,8 +594,6 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
                             buffer.release();
                         }
                     }
-                } else {
-                    allocHandle.lastBytesRead(0);
                 }
             } catch (Throwable t) {
                 Throwable e = (connected && t instanceof NativeIoException) ?

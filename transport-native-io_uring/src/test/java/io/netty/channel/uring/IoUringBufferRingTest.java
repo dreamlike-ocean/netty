@@ -256,10 +256,10 @@ public class IoUringBufferRingTest {
     }
 
     @Test
-    public void testDatagramProviderBufferReadFailsIfMultishotPayloadIsTruncated() throws InterruptedException {
+    public void testDatagramProviderBufferReadDeliversTruncatedMultishotPayload() throws InterruptedException {
         assumeTrue(IoUring.isRecvMultishotEnabled());
         assumeTrue(IoUring.isRegisterBufferRingIncSupported());
-        assertDatagramProviderBufferReadFailure(64, asciiString(128), "truncated datagram");
+        assertDatagramProviderBufferReadTruncated(64, asciiString(128));
     }
 
     @ParameterizedTest
@@ -343,6 +343,16 @@ public class IoUringBufferRingTest {
     private static void assertDatagramProviderBufferReadFailure(int bufferSize, String message,
                                                                String expectedMessagePart)
             throws InterruptedException {
+        assertDatagramProviderBufferRead(bufferSize, message, expectedMessagePart);
+    }
+
+    private static void assertDatagramProviderBufferReadTruncated(int bufferSize, String message)
+            throws InterruptedException {
+        assertDatagramProviderBufferRead(bufferSize, message, null);
+    }
+
+    private static void assertDatagramProviderBufferRead(int bufferSize, String message, String expectedMessagePart)
+            throws InterruptedException {
         final BlockingQueue<DatagramPacket> packets = new LinkedBlockingQueue<>();
         final BlockingQueue<Throwable> exceptions = new LinkedBlockingQueue<>();
         IoUringIoHandlerConfig ioUringIoHandlerConfiguration = new IoUringIoHandlerConfig();
@@ -363,6 +373,7 @@ public class IoUringBufferRingTest {
         Channel serverChannel = null;
         Channel clientChannel = null;
         ByteBuf writeBuffer = Unpooled.directBuffer(message.length());
+        ByteBuf expected = Unpooled.directBuffer(message.length());
         try {
             Bootstrap serverBootstrap = new Bootstrap();
             serverChannel = serverBootstrap.group(group)
@@ -391,17 +402,37 @@ public class IoUringBufferRingTest {
                     .syncUninterruptibly().channel();
 
             ByteBufUtil.writeAscii(writeBuffer, message);
+            ByteBufUtil.writeAscii(expected, message);
             InetSocketAddress recipient = (InetSocketAddress) serverChannel.localAddress();
             clientChannel.writeAndFlush(new DatagramPacket(writeBuffer.retainedDuplicate(), recipient))
                     .syncUninterruptibly();
 
-            Throwable cause = exceptions.poll(10, TimeUnit.SECONDS);
-            assertNotNull(cause);
-            assertTrue(cause instanceof IllegalStateException, cause.toString());
-            assertTrue(cause.getMessage().contains(expectedMessagePart), cause.getMessage());
-            assertTrue(packets.isEmpty());
+            if (expectedMessagePart == null) {
+                DatagramPacket packet = packets.poll(10, TimeUnit.SECONDS);
+                Throwable cause = exceptions.poll();
+                if (cause != null) {
+                    throw new AssertionError(cause);
+                }
+                assertNotNull(packet);
+                try {
+                    int readableBytes = packet.content().readableBytes();
+                    assertTrue(readableBytes > 0);
+                    assertTrue(readableBytes < expected.readableBytes());
+                    expected.writerIndex(readableBytes);
+                    assertTrue(ByteBufUtil.equals(expected, packet.content()));
+                } finally {
+                    packet.release();
+                }
+            } else {
+                Throwable cause = exceptions.poll(10, TimeUnit.SECONDS);
+                assertNotNull(cause);
+                assertTrue(cause instanceof IllegalStateException, cause.toString());
+                assertTrue(cause.getMessage().contains(expectedMessagePart), cause.getMessage());
+                assertTrue(packets.isEmpty());
+            }
         } finally {
             writeBuffer.release();
+            expected.release();
             if (serverChannel != null) {
                 serverChannel.close().syncUninterruptibly();
             }
