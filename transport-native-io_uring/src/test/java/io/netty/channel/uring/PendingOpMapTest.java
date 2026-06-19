@@ -27,7 +27,7 @@ public class PendingOpMapTest {
         PendingOpMap map = new PendingOpMap(4);
         long token = map.nextToken();
 
-        map.registerNormal(token, 42, (byte) 7, Long.MAX_VALUE);
+        map.register(token, 42, (byte) 7, Long.MAX_VALUE);
 
         int slot = map.findSlot(token);
         assertTrue(slot >= 0);
@@ -45,7 +45,7 @@ public class PendingOpMapTest {
         for (int i = 0; i < tokens.length; i++) {
             long token = map.nextToken();
             tokens[i] = token;
-            map.registerNormal(token, i + 1, (byte) i, i * 100L);
+            map.register(token, i + 1, (byte) i, i * 100L);
         }
 
         for (int i = 0; i < tokens.length; i++) {
@@ -103,9 +103,32 @@ public class PendingOpMapTest {
         assertEquals(3L, map.userData(nextSlot));
     }
 
+    @Test
+    public void testDuplicateTokenFindsNextLiveEntry() {
+        PendingOpMap map = new PendingOpMap(4);
+        long token = map.nextToken();
+
+        map.register(token, 1, (byte) 1, 10L);
+        map.register(token, 2, (byte) 2, 20L);
+
+        assertEntry(map, token, 1, (byte) 1, 10L);
+        map.release(map.findSlot(token));
+        assertEntry(map, token, 2, (byte) 2, 20L);
+        map.release(map.findSlot(token));
+        assertEquals(-1, map.findSlot(token));
+    }
+
     private static long register(PendingOpMap map, int value) {
         long token = map.nextToken();
-        map.registerNormal(token, value, (byte) value, value);
+        map.register(token, value, (byte) value, value);
         return token;
+    }
+
+    private static void assertEntry(PendingOpMap map, long token, int registrationId, byte op, long userData) {
+        int slot = map.findSlot(token);
+        assertTrue(slot >= 0);
+        assertEquals(registrationId, map.registrationId(slot));
+        assertEquals(op, map.op(slot));
+        assertEquals(userData, map.userData(slot));
     }
 }

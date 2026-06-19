@@ -27,8 +27,6 @@ import io.netty.channel.unix.FileDescriptor;
 import io.netty.channel.unix.IovArray;
 import io.netty.util.collection.IntObjectHashMap;
 import io.netty.util.collection.IntObjectMap;
-import io.netty.util.collection.LongObjectHashMap;
-import io.netty.util.collection.LongObjectMap;
 import io.netty.util.concurrent.ThreadAwareExecutor;
 import io.netty.util.internal.CleanableDirectBuffer;
 import io.netty.util.internal.ObjectUtil;
@@ -80,7 +78,6 @@ public final class IoUringIoHandler implements IoHandler {
     private volatile boolean shuttingDown;
     private boolean closeCompleted;
     private final PendingOpMap pendingOps;
-    private final LongObjectMap<PendingLinkedIoOps> pendingLinkedIoOps;
     private int nextRegistrationId = 1;
 
     private static final long INVALID_ID = 0;
@@ -140,7 +137,6 @@ public final class IoUringIoHandler implements IoHandler {
 
         registrations = new IntObjectHashMap<>();
         pendingOps = new PendingOpMap(IoUring.DEFAULT_PENDING_OPS_INITIAL_CAPACITY);
-        pendingLinkedIoOps = new LongObjectHashMap<>(IoUring.DEFAULT_PENDING_OPS_INITIAL_CAPACITY);
         eventfd = Native.newBlockingEventFd();
         eventfdReadBufCleanable = Buffer.allocateDirectBufferWithNativeOrder(Long.BYTES);
         eventfdReadBuf = eventfdReadBufCleanable.buffer();
@@ -320,10 +316,6 @@ public final class IoUringIoHandler implements IoHandler {
     }
 
     private void handleSlowPath(int res, int flags, long udata, ByteBuffer extraCqeData) {
-        if (PendingOpMap.isLinkedToken(udata)) {
-            handleLinkedSlowPath(res, flags, udata, extraCqeData);
-            return;
-        }
         long sequence = PendingOpMap.tokenSequence(udata);
         int slot = pendingOps.findSlot(udata);
         if (slot != -1) {
@@ -352,37 +344,6 @@ public final class IoUringIoHandler implements IoHandler {
         }
         if (logger.isDebugEnabled()) {
             logger.debug("ignoring slow-path completion for unknown sequence (seq={}, res={})", sequence, res);
-        }
-    }
-
-    private void handleLinkedSlowPath(int res, int flags, long udata, ByteBuffer extraCqeData) {
-        long sequence = PendingOpMap.tokenSequence(udata);
-        PendingLinkedIoOps linkedOps = pendingLinkedIoOps.get(udata);
-        if (linkedOps == null) {
-            if (logger.isDebugEnabled()) {
-                logger.debug("ignoring linked slow-path completion for unknown sequence (seq={}, res={})",
-                        sequence, res);
-            }
-            return;
-        }
-
-        DefaultIoUringIoRegistration registration = registrations.get(linkedOps.registrationId);
-        byte op = linkedOps.op();
-        long userData = linkedOps.userData();
-
-        if ((flags & Native.IORING_CQE_F_MORE) == 0 && linkedOps.completeTerminal()) {
-            pendingLinkedIoOps.remove(udata);
-        }
-
-        if (registration != null) {
-            traceCompletion(registration, linkedOps.registrationId, op, res);
-            registration.handle(res, flags, op, userData, extraCqeData);
-            return;
-        }
-        if (logger.isDebugEnabled()) {
-            logger.debug("ignoring linked slow-path completion for missing registration (registrationId={}, seq={}, "
-                            + "op={}, userData={}, res={})",
-                    linkedOps.registrationId, sequence, Native.opToStr(op), userData, res);
         }
     }
 
@@ -599,31 +560,6 @@ public final class IoUringIoHandler implements IoHandler {
         return id;
     }
 
-    private static final class PendingLinkedIoOps {
-        final int registrationId;
-        private final byte[] opcodes;
-        private final long[] userDatas;
-        private int cursor;
-
-        PendingLinkedIoOps(int registrationId, byte[] opcodes, long[] userDatas) {
-            this.registrationId = registrationId;
-            this.opcodes = opcodes;
-            this.userDatas = userDatas;
-        }
-
-        byte op() {
-            return opcodes[cursor];
-        }
-
-        long userData() {
-            return userDatas[cursor];
-        }
-
-        boolean completeTerminal() {
-            return ++cursor == opcodes.length;
-        }
-    }
-
     private final class DefaultIoUringIoRegistration implements IoRegistration {
         private final AtomicBoolean canceled = new AtomicBoolean();
         private final ThreadAwareExecutor executor;
@@ -687,7 +623,7 @@ public final class IoUringIoHandler implements IoHandler {
                         "linked ops size " + linkedOps.size() + " exceeds ring entries "
                                 + submissionQueue.ringEntries);
             }
-            long token = pendingOps.nextLinkedToken();
+            long token = pendingOps.nextToken();
             if (executor.isExecutorThread(Thread.currentThread())) {
                 submitLinked0(linkedOps, token);
             } else {
@@ -705,7 +641,7 @@ public final class IoUringIoHandler implements IoHandler {
         }
 
         private void submitSlowPath0(IoUringIoOps ioOps, long token, long userData) {
-            pendingOps.registerNormal(token, id, ioOps.opcode(), userData);
+            pendingOps.register(token, id, ioOps.opcode(), userData);
             ringBuffer.ioUringSubmissionQueue().enqueueSqe(ioOps.opcode(), ioOps.flags(), ioOps.ioPrio(),
                     ioOps.fd(), ioOps.union1(), ioOps.union2(), ioOps.len(), ioOps.union3(), token,
                     ioOps.union4(), ioOps.personality(), ioOps.union5(), ioOps.union6()
@@ -716,11 +652,9 @@ public final class IoUringIoHandler implements IoHandler {
         private void submitLinked0(IoUringLinkedIoOps linkedOps, long token) {
             SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
             submissionQueue.ensureWritable(linkedOps.size());
-            PendingLinkedIoOps old = pendingLinkedIoOps.put(token,
-                    new PendingLinkedIoOps(id, linkedOps.opcodes(), linkedOps.userDatas()));
-            assert old == null;
             for (int i = 0; i < linkedOps.size(); i++) {
                 IoUringIoOps ioOps = linkedOps.op(i);
+                pendingOps.register(token, id, ioOps.opcode(), ioOps.userData());
                 submissionQueue.enqueueSqe(ioOps.opcode(), ioOps.flags(), ioOps.ioPrio(),
                         ioOps.fd(), ioOps.union1(), ioOps.union2(), ioOps.len(), ioOps.union3(), token,
                         ioOps.union4(), ioOps.personality(), ioOps.union5(), ioOps.union6()

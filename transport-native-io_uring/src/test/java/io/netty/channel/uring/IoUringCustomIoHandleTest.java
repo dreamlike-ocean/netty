@@ -115,6 +115,26 @@ public class IoUringCustomIoHandleTest {
         }
     }
 
+    @Test
+    public void testLinkedOpsPreserveSubmittedUserData() throws Exception {
+        IoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory());
+        try {
+            TestHandle handle = new TestHandle();
+            IoRegistration registration = register(group, handle);
+
+            long submittedId = registration.submit(IoUringLinkedIoOps.of(nop(100_000L), nop(100_001L), nop(100_002L)));
+
+            assertNotEquals(0L, submittedId);
+            assertEquals(100_000L, handle.awaitUserData());
+            assertEquals(100_001L, handle.awaitUserData());
+            assertEquals(100_002L, handle.awaitUserData());
+
+            assertTrue(registration.cancel());
+        } finally {
+            shutdown(group);
+        }
+    }
+
     private static IoRegistration register(IoEventLoopGroup group, IoUringIoHandle handle) {
         IoEventLoop loop = group.next();
         return loop.register(handle).syncUninterruptibly().getNow();

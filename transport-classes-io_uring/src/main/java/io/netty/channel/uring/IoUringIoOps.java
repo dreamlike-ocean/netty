@@ -251,14 +251,9 @@ public final class IoUringIoOps implements IoOps {
      * @return          ops.
      */
     static IoUringIoOps newAsyncCancel(byte flags, long userData, short data) {
-        int cancelFlags = PendingOpMap.isLinkedToken(userData) ? Native.IORING_ASYNC_CANCEL_ALL : 0;
-        return newAsyncCancel(flags, cancelFlags, userData, data);
-    }
-
-    static IoUringIoOps newAsyncCancel(byte flags, int cancelFlags, long userData, short data) {
         // Best effort to cancel the
         // See https://github.com/axboe/liburing/blob/liburing-2.8/src/include/liburing.h#L679
-        return new IoUringIoOps(Native.IORING_OP_ASYNC_CANCEL, flags, (short) 0, -1, 0, userData, 0, cancelFlags,
+        return new IoUringIoOps(Native.IORING_OP_ASYNC_CANCEL, flags, (short) 0, -1, 0, userData, 0, 0,
                 data, (short) 0, (short) 0, 0, 0);
     }
 

@@ -22,27 +22,9 @@ import io.netty.channel.IoOps;
  */
 public final class IoUringLinkedIoOps implements IoOps {
     private final IoUringIoOps[] ops;
-    private final byte[] opcodes;
-    private final long[] userDatas;
 
     private IoUringLinkedIoOps(IoUringIoOps[] ops) {
         this.ops = ops;
-        opcodes = new byte[ops.length];
-        userDatas = new long[ops.length];
-        for (int i = 0; i < ops.length; i++) {
-            IoUringIoOps op = ops[i];
-            opcodes[i] = op.opcode();
-            userDatas[i] = op.userData();
-        }
-    }
-
-    /**
-     * Returns {@code true} if linked-chain cancellation can be supported by the kernel.
-     *
-     * @return {@code true} if supported, {@code false} otherwise.
-     */
-    public static boolean isSupported() {
-        return IoUring.isAsyncCancelAllSupported();
     }
 
     /**
@@ -59,11 +41,6 @@ public final class IoUringLinkedIoOps implements IoOps {
         if (ops.length < 2) {
             throw new IllegalArgumentException("linked ops must contain at least two operations; submit a single "
                     + "IoUringIoOps directly");
-        }
-        if (!isSupported()) {
-            throw new UnsupportedOperationException("IoUringLinkedIoOps requires IORING_ASYNC_CANCEL_ALL support "
-                    + "so the single id returned by IoRegistration.submit(...) can cancel every SQE in the "
-                    + "linked chain");
         }
         IoUringIoOps[] copy = new IoUringIoOps[ops.length];
         for (int i = 0; i < ops.length; i++) {
@@ -88,14 +65,6 @@ public final class IoUringLinkedIoOps implements IoOps {
 
     public IoUringIoOps op(int index) {
         return ops[index];
-    }
-
-    byte[] opcodes() {
-        return opcodes;
-    }
-
-    long[] userDatas() {
-        return userDatas;
     }
 
     private static byte normalizeLinkFlag(byte flags, boolean last) {
