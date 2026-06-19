@@ -36,7 +36,6 @@ public final class IoUring {
     private static final boolean IORING_SENDMSG_ZC_SUPPORTED;
     private static final boolean IORING_ACCEPT_NO_WAIT_SUPPORTED;
     private static final boolean IORING_ACCEPT_MULTISHOT_SUPPORTED;
-    private static final boolean IORING_ASYNC_CANCEL_ALL_SUPPORTED;
     private static final boolean IORING_RECV_MULTISHOT_SUPPORTED;
     private static final boolean IORING_RECVSEND_BUNDLE_SUPPORTED;
     private static final boolean IORING_POLL_ADD_MULTISHOT_SUPPORTED;
@@ -72,7 +71,6 @@ public final class IoUring {
         boolean sendmsgZcSupported = false;
         boolean acceptSupportNoWait = false;
         boolean acceptMultishotSupported = false;
-        boolean asyncCancelAllSupported = false;
         boolean recvsendBundleSupported = false;
         boolean recvMultishotSupported = false;
         boolean pollAddMultishotSupported = false;
@@ -121,7 +119,6 @@ public final class IoUring {
                         acceptSupportNoWait = recvsendBundleSupported;
 
                         acceptMultishotSupported = Native.isAcceptMultishotSupported(ioUringProbe);
-                        asyncCancelAllSupported = Native.isAsyncCancelAllSupported(ioUringProbe);
                         recvMultishotSupported = Native.isRecvMultishotSupported();
                         pollAddMultishotSupported = Native.isPollAddMultiShotSupported(ioUringProbe);
                         registerIowqWorkersSupported = Native.isRegisterIoWqWorkerSupported(ringBuffer.fd());
@@ -161,7 +158,6 @@ public final class IoUring {
         IORING_SENDMSG_ZC_SUPPORTED = sendmsgZcSupported;
         IORING_ACCEPT_NO_WAIT_SUPPORTED = acceptSupportNoWait;
         IORING_ACCEPT_MULTISHOT_SUPPORTED = acceptMultishotSupported;
-        IORING_ASYNC_CANCEL_ALL_SUPPORTED = asyncCancelAllSupported;
         IORING_RECV_MULTISHOT_SUPPORTED = recvMultishotSupported;
         IORING_RECVSEND_BUNDLE_SUPPORTED = recvsendBundleSupported;
         IORING_POLL_ADD_MULTISHOT_SUPPORTED = pollAddMultishotSupported;
@@ -287,10 +283,6 @@ public final class IoUring {
 
     static boolean isAcceptMultishotSupported() {
         return IORING_ACCEPT_MULTISHOT_SUPPORTED;
-    }
-
-    static boolean isAsyncCancelAllSupported() {
-        return IORING_ASYNC_CANCEL_ALL_SUPPORTED;
     }
 
     static boolean isRecvMultishotSupported() {
@@ -431,7 +423,6 @@ public final class IoUring {
                 + ", SPLICE_SUPPORTED=" + IORING_SPLICE_SUPPORTED
                 + ", ACCEPT_NO_WAIT_SUPPORTED=" + IORING_ACCEPT_NO_WAIT_SUPPORTED
                 + ", ACCEPT_MULTISHOT_SUPPORTED=" + IORING_ACCEPT_MULTISHOT_SUPPORTED
-                + ", ASYNC_CANCEL_ALL_SUPPORTED=" + IORING_ASYNC_CANCEL_ALL_SUPPORTED
                 + ", POLL_ADD_MULTISHOT_SUPPORTED=" + IORING_POLL_ADD_MULTISHOT_SUPPORTED
                 + ", RECV_MULTISHOT_SUPPORTED=" + IORING_RECV_MULTISHOT_SUPPORTED
                 + ", IORING_RECVSEND_BUNDLE_SUPPORTED=" + IORING_RECVSEND_BUNDLE_SUPPORTED

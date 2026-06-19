@@ -23,8 +23,7 @@ final class PendingOpMap {
     private static final long HASH_MULTIPLIER = 0x9E3779B97F4A7C15L;
     private static final long EMPTY = 0;
     private static final long TOMBSTONE = 1;
-    private static final long LINKED_TOKEN_MASK = 1L << 62;
-    private static final long TOKEN_SEQUENCE_MASK = LINKED_TOKEN_MASK - 1;
+    private static final long TOKEN_SEQUENCE_MASK = Long.MAX_VALUE;
 
     private long[] tokens;
     private int[] registrationIds;
@@ -55,15 +54,7 @@ final class PendingOpMap {
         return token(sequence);
     }
 
-    long nextLinkedToken() {
-        long sequence = nextSequence.getAndIncrement();
-        if (sequence <= 0 || (sequence & ~TOKEN_SEQUENCE_MASK) != 0) {
-            throw new IllegalStateException("slow path sequence overflow");
-        }
-        return linkedToken(sequence);
-    }
-
-    void registerNormal(long token, int registrationId, byte op, long userData) {
+    void register(long token, int registrationId, byte op, long userData) {
         for (;;) {
             int startIndex = hashIndex(token, mask);
             int index = startIndex;
@@ -188,14 +179,6 @@ final class PendingOpMap {
         // `nextSequence` would need to reach Long.MAX_VALUE and overflow,
         // which is considered practically impossible in this context.
         return Long.MIN_VALUE | sequence;
-    }
-
-    static long linkedToken(long sequence) {
-        return Long.MIN_VALUE | LINKED_TOKEN_MASK | sequence;
-    }
-
-    static boolean isLinkedToken(long token) {
-        return token < 0 && (token & LINKED_TOKEN_MASK) != 0;
     }
 
     static long tokenSequence(long token) {
