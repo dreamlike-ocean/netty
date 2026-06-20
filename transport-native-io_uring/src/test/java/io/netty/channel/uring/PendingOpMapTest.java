@@ -27,7 +27,7 @@ public class PendingOpMapTest {
         PendingOpMap map = new PendingOpMap(4);
         long token = map.nextToken();
 
-        map.register(token, 42, (byte) 7, Long.MAX_VALUE);
+        map.registerNormal(token, 42, (byte) 7, Long.MAX_VALUE);
 
         int slot = map.findSlot(token);
         assertTrue(slot >= 0);
@@ -45,7 +45,7 @@ public class PendingOpMapTest {
         for (int i = 0; i < tokens.length; i++) {
             long token = map.nextToken();
             tokens[i] = token;
-            map.register(token, i + 1, (byte) i, i * 100L);
+            map.registerNormal(token, i + 1, (byte) i, i * 100L);
         }
 
         for (int i = 0; i < tokens.length; i++) {
@@ -108,8 +108,8 @@ public class PendingOpMapTest {
         PendingOpMap map = new PendingOpMap(4);
         long token = map.nextToken();
 
-        map.register(token, 1, (byte) 1, 10L);
-        map.register(token, 2, (byte) 2, 20L);
+        map.registerNormal(token, 1, (byte) 1, 10L);
+        map.registerNormal(token, 2, (byte) 2, 20L);
 
         assertEntry(map, token, 1, (byte) 1, 10L);
         map.release(map.findSlot(token));
@@ -120,7 +120,7 @@ public class PendingOpMapTest {
 
     private static long register(PendingOpMap map, int value) {
         long token = map.nextToken();
-        map.register(token, value, (byte) value, value);
+        map.registerNormal(token, value, (byte) value, value);
         return token;
     }
 

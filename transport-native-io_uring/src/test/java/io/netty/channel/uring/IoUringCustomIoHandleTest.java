@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -128,6 +129,24 @@ public class IoUringCustomIoHandleTest {
             assertEquals(100_000L, handle.awaitUserData());
             assertEquals(100_001L, handle.awaitUserData());
             assertEquals(100_002L, handle.awaitUserData());
+
+            assertTrue(registration.cancel());
+        } finally {
+            shutdown(group);
+        }
+    }
+
+    @Test
+    public void testLinkedOpsRejectsMoreOpsThanSubmissionQueue() throws Exception {
+        IoUringIoHandlerConfig config = new IoUringIoHandlerConfig();
+        config.setRingSize(4);
+        IoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory(config));
+        try {
+            TestHandle handle = new TestHandle();
+            IoRegistration registration = register(group, handle);
+
+            assertThrows(IllegalArgumentException.class, () -> registration.submit(IoUringLinkedIoOps.of(
+                    nop(100_000L), nop(100_001L), nop(100_002L), nop(100_003L), nop(100_004L))));
 
             assertTrue(registration.cancel());
         } finally {

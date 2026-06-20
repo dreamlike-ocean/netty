@@ -23,7 +23,6 @@ final class PendingOpMap {
     private static final long HASH_MULTIPLIER = 0x9E3779B97F4A7C15L;
     private static final long EMPTY = 0;
     private static final long TOMBSTONE = 1;
-    private static final long TOKEN_SEQUENCE_MASK = Long.MAX_VALUE;
 
     private long[] tokens;
     private int[] registrationIds;
@@ -46,7 +45,7 @@ final class PendingOpMap {
 
     long nextToken() {
         long sequence = nextSequence.getAndIncrement();
-        if (sequence <= 0 || (sequence & ~TOKEN_SEQUENCE_MASK) != 0) {
+        if (sequence <= 0) {
             // Monotonic sequence starting at 3; ~29k years to exhaust positive long space at 10M/s,
             // so overflow is purely theoretical.
             throw new IllegalStateException("slow path sequence overflow");
@@ -54,7 +53,7 @@ final class PendingOpMap {
         return token(sequence);
     }
 
-    void register(long token, int registrationId, byte op, long userData) {
+    void registerNormal(long token, int registrationId, byte op, long userData) {
         for (;;) {
             int startIndex = hashIndex(token, mask);
             int index = startIndex;
@@ -182,7 +181,7 @@ final class PendingOpMap {
     }
 
     static long tokenSequence(long token) {
-        return token & TOKEN_SEQUENCE_MASK;
+        return token & Long.MAX_VALUE;
     }
 
     private static int hashIndex(long key, int mask) {

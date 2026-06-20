@@ -641,7 +641,7 @@ public final class IoUringIoHandler implements IoHandler {
         }
 
         private void submitSlowPath0(IoUringIoOps ioOps, long token, long userData) {
-            pendingOps.register(token, id, ioOps.opcode(), userData);
+            pendingOps.registerNormal(token, id, ioOps.opcode(), userData);
             ringBuffer.ioUringSubmissionQueue().enqueueSqe(ioOps.opcode(), ioOps.flags(), ioOps.ioPrio(),
                     ioOps.fd(), ioOps.union1(), ioOps.union2(), ioOps.len(), ioOps.union3(), token,
                     ioOps.union4(), ioOps.personality(), ioOps.union5(), ioOps.union6()
@@ -654,7 +654,7 @@ public final class IoUringIoHandler implements IoHandler {
             submissionQueue.ensureWritable(linkedOps.size());
             for (int i = 0; i < linkedOps.size(); i++) {
                 IoUringIoOps ioOps = linkedOps.op(i);
-                pendingOps.register(token, id, ioOps.opcode(), ioOps.userData());
+                pendingOps.registerNormal(token, id, ioOps.opcode(), ioOps.userData());
                 submissionQueue.enqueueSqe(ioOps.opcode(), ioOps.flags(), ioOps.ioPrio(),
                         ioOps.fd(), ioOps.union1(), ioOps.union2(), ioOps.len(), ioOps.union3(), token,
                         ioOps.union4(), ioOps.personality(), ioOps.union5(), ioOps.union6()
