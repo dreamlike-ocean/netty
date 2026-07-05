@@ -60,8 +60,8 @@ public final class IoUringLinkedIoOps implements IoOps {
     }
 
     /**
-     * Returns the operation identifier for the operation at {@code index}, derived from the identifier returned when this
-     * linked chain was submitted.
+     * Returns the operation identifier for the operation at {@code index}, derived from the identifier returned when
+     * this linked chain was submitted.
      * <p>
      * {@code submittedId} must be the value returned by {@link io.netty.channel.IoRegistration#submit(IoOps)} for this
      * {@link IoUringLinkedIoOps} instance.
