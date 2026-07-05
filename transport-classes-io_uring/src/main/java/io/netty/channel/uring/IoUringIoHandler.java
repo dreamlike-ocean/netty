@@ -618,18 +618,19 @@ public final class IoUringIoHandler implements IoHandler {
                 return INVALID_ID;
             }
             SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
-            if (linkedOps.size() > submissionQueue.ringEntries) {
+            int size = linkedOps.size();
+            if (size > submissionQueue.ringEntries) {
                 throw new IllegalArgumentException(
-                        "linked ops size " + linkedOps.size() + " exceeds ring entries "
-                                + submissionQueue.ringEntries);
+                        "linked ops size " + size + " exceeds ring entries "
+                        + submissionQueue.ringEntries);
             }
-            long token = pendingOps.nextToken();
+            long firstToken = pendingOps.nextTokens(size);
             if (executor.isExecutorThread(Thread.currentThread())) {
-                submitLinked0(linkedOps, token);
+                submitLinked0(linkedOps, firstToken);
             } else {
-                executor.execute(() -> submitLinked0(linkedOps, token));
+                executor.execute(() -> submitLinked0(linkedOps, firstToken));
             }
-            return token;
+            return firstToken;
         }
 
         private void submitFastPath0(IoUringIoOps ioOps, long seq) {
@@ -649,10 +650,11 @@ public final class IoUringIoHandler implements IoHandler {
             outstandingCompletions++;
         }
 
-        private void submitLinked0(IoUringLinkedIoOps linkedOps, long token) {
+        private void submitLinked0(IoUringLinkedIoOps linkedOps, long firstToken) {
             SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
             submissionQueue.ensureWritable(linkedOps.size());
             for (int i = 0; i < linkedOps.size(); i++) {
+                long token = linkedOps.tokenAtIndex(firstToken, i);
                 IoUringIoOps ioOps = linkedOps.op(i);
                 pendingOps.registerNormal(token, id, ioOps.opcode(), ioOps.userData());
                 submissionQueue.enqueueSqe(ioOps.opcode(), ioOps.flags(), ioOps.ioPrio(),

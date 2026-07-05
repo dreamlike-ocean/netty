@@ -18,7 +18,7 @@ package io.netty.channel.uring;
 import io.netty.channel.IoOps;
 
 /**
- * A linked chain of {@link IoUringIoOps} submitted with one shared {@code user_data}.
+ * A linked chain submitted as contiguous SQEs, with submit returning the first operation id
  */
 public final class IoUringLinkedIoOps implements IoOps {
     private final IoUringIoOps[] ops;
@@ -57,6 +57,30 @@ public final class IoUringLinkedIoOps implements IoOps {
             copy[i] = flags == op.flags() ? op : withFlags(op, flags);
         }
         return new IoUringLinkedIoOps(copy);
+    }
+
+    /**
+     * Returns the operation identifier for the operation at {@code index}, derived from the identifier returned when this
+     * linked chain was submitted.
+     * <p>
+     * {@code submittedId} must be the value returned by {@link io.netty.channel.IoRegistration#submit(IoOps)} for this
+     * {@link IoUringLinkedIoOps} instance.
+     * <p>
+     * The returned identifier can be used to refer to the individual operation at {@code index}.
+     *
+     * @param submittedId   the identifier returned when this linked chain was submitted.
+     * @param index         the index of the operation in this linked chain.
+     * @return              the identifier for the operation at {@code index}.
+     */
+    public long tokenAtIndex(long submittedId, int index) {
+        if (index < 0 || index >= ops.length) {
+            throw new IndexOutOfBoundsException("index=" + index + ", size=" + ops.length);
+        }
+        if (submittedId >= 0) {
+            throw new IllegalArgumentException("submittedId is not a valid linked operation identifier");
+        }
+        long sequence = PendingOpMap.tokenSequence(submittedId);
+        return PendingOpMap.token(sequence + index);
     }
 
     public int size() {

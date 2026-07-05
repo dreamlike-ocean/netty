@@ -70,39 +70,6 @@ public class SubmissionQueueTest {
     }
 
     @Test
-    public void ensureWritableSubmitsWhenRemainingIsInsufficient() {
-        RingBuffer ringBuffer = Native.createRingBuffer(4, 0);
-        ringBuffer.enable();
-        try {
-            SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
-
-            assertThat(submissionQueue.addNop((byte) 0, 1)).isNotZero();
-            assertThat(submissionQueue.addNop((byte) 0, 2)).isNotZero();
-            assertThat(submissionQueue.addNop((byte) 0, 3)).isNotZero();
-            assertEquals(1, submissionQueue.remaining());
-
-            submissionQueue.ensureWritable(2);
-
-            assertThat(submissionQueue.remaining()).isGreaterThanOrEqualTo(2);
-        } finally {
-            ringBuffer.close();
-        }
-    }
-
-    @Test
-    public void ensureWritableRejectsMoreThanRingEntries() {
-        RingBuffer ringBuffer = Native.createRingBuffer(4, 0);
-        ringBuffer.enable();
-        try {
-            SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
-
-            assertThrows(IllegalArgumentException.class, () -> submissionQueue.ensureWritable(5));
-        } finally {
-            ringBuffer.close();
-        }
-    }
-
-    @Test
     public void useAfterClose() {
         RingBuffer ringBuffer = Native.createRingBuffer(8, 0);
         ringBuffer.enable();

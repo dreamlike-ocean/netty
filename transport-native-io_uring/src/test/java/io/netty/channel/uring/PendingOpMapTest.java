@@ -103,32 +103,9 @@ public class PendingOpMapTest {
         assertEquals(3L, map.userData(nextSlot));
     }
 
-    @Test
-    public void testDuplicateTokenFindsNextLiveEntry() {
-        PendingOpMap map = new PendingOpMap(4);
-        long token = map.nextToken();
-
-        map.registerNormal(token, 1, (byte) 1, 10L);
-        map.registerNormal(token, 2, (byte) 2, 20L);
-
-        assertEntry(map, token, 1, (byte) 1, 10L);
-        map.release(map.findSlot(token));
-        assertEntry(map, token, 2, (byte) 2, 20L);
-        map.release(map.findSlot(token));
-        assertEquals(-1, map.findSlot(token));
-    }
-
     private static long register(PendingOpMap map, int value) {
         long token = map.nextToken();
         map.registerNormal(token, value, (byte) value, value);
         return token;
-    }
-
-    private static void assertEntry(PendingOpMap map, long token, int registrationId, byte op, long userData) {
-        int slot = map.findSlot(token);
-        assertTrue(slot >= 0);
-        assertEquals(registrationId, map.registrationId(slot));
-        assertEquals(op, map.op(slot));
-        assertEquals(userData, map.userData(slot));
     }
 }

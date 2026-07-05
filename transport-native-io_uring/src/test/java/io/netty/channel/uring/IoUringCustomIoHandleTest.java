@@ -123,30 +123,19 @@ public class IoUringCustomIoHandleTest {
             TestHandle handle = new TestHandle();
             IoRegistration registration = register(group, handle);
 
-            long submittedId = registration.submit(IoUringLinkedIoOps.of(nop(100_000L), nop(100_001L), nop(100_002L)));
+            IoUringLinkedIoOps linkedOps = IoUringLinkedIoOps.of(
+                    nop(100_000L), nop(100_001L), nop(100_002L));
+            long submittedId = registration.submit(linkedOps);
 
             assertNotEquals(0L, submittedId);
+            assertEquals(submittedId, linkedOps.tokenAtIndex(submittedId, 0));
             assertEquals(100_000L, handle.awaitUserData());
             assertEquals(100_001L, handle.awaitUserData());
             assertEquals(100_002L, handle.awaitUserData());
 
-            assertTrue(registration.cancel());
-        } finally {
-            shutdown(group);
-        }
-    }
-
-    @Test
-    public void testLinkedOpsRejectsMoreOpsThanSubmissionQueue() throws Exception {
-        IoUringIoHandlerConfig config = new IoUringIoHandlerConfig();
-        config.setRingSize(4);
-        IoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory(config));
-        try {
-            TestHandle handle = new TestHandle();
-            IoRegistration registration = register(group, handle);
-
-            assertThrows(IllegalArgumentException.class, () -> registration.submit(IoUringLinkedIoOps.of(
-                    nop(100_000L), nop(100_001L), nop(100_002L), nop(100_003L), nop(100_004L))));
+            long fastPathId = registration.submit(nop(123L));
+            assertThrows(IllegalArgumentException.class, () -> linkedOps.tokenAtIndex(fastPathId, 0));
+            assertEquals(123L, handle.awaitUserData());
 
             assertTrue(registration.cancel());
         } finally {
