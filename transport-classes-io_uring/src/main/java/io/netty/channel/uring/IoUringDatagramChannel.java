@@ -16,6 +16,7 @@
 package io.netty.channel.uring;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.AddressedEnvelope;
 import io.netty.channel.ChannelException;
 import io.netty.channel.ChannelFuture;
@@ -65,6 +66,9 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
 
     private final IoUringDatagramChannelConfig config;
     private volatile boolean connected;
+    private IoUringBufferRing bufferRing;
+    private byte readOpCode;
+    private long readId;
 
     static {
         if (logger.isDebugEnabled()) {
@@ -304,6 +308,49 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
         return new IoUringDatagramChannelUnsafe();
     }
 
+    void maxDatagramPayloadSizeChanged(int oldMaxDatagramSize, int maxDatagramSize) {
+        if (oldMaxDatagramSize == maxDatagramSize || !isRegistered()) {
+            return;
+        }
+        if (eventLoop().inEventLoop()) {
+            cancelCurrentRead();
+        } else {
+            eventLoop().execute(this::cancelCurrentRead);
+        }
+    }
+
+    private void cancelCurrentRead() {
+        assert eventLoop().inEventLoop();
+        IoRegistration registration = registration();
+        if (readId != 0) {
+            cancelProviderBufferRead(registration);
+        } else {
+            cancel(registration, Native.IORING_OP_RECVMSG, recvmsgHdrs);
+        }
+    }
+
+    @Override
+    protected void doRegister(ChannelPromise promise) {
+        ChannelPromise registerPromise = newPromise();
+        registerPromise.addListener(f -> {
+            if (f.isSuccess()) {
+                try {
+                    short bgid = config.getBufferGroupId();
+                    if (bgid >= 0) {
+                        final IoUringIoHandler ioUringIoHandler = registration().attachment();
+                        bufferRing = ioUringIoHandler.findBufferRing(bgid);
+                    }
+                } finally {
+                    promise.setSuccess();
+                }
+            } else {
+                promise.setFailure(f.cause());
+            }
+        });
+
+        super.doRegister(registerPromise);
+    }
+
     @Override
     protected void doBind(SocketAddress localAddress) throws Exception {
         if (localAddress instanceof InetSocketAddress) {
@@ -409,12 +456,14 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
 
         @Override
         protected void readComplete0(byte op, int res, int flags, short data, int outstanding) {
-            assert outstanding != -1 : "multi-shot not implemented yet";
-
             final IoUringRecvByteAllocatorHandle allocHandle = recvBufAllocHandle();
             final ChannelPipeline pipeline = pipeline();
             ByteBuf byteBuf = this.readBuffer;
-            assert byteBuf != null;
+            if (byteBuf == null) {
+                readProviderBufferComplete(res, flags, data, outstanding, allocHandle, pipeline);
+                return;
+            }
+
             MsgHdrMemory hdr = recvmsgHdrs.hdr(data);
             // Reset the id as this read was completed and so don't need to be cancelled later.
             recvmsgHdrs.setId(data, MsgHdrMemoryArray.NO_ID);
@@ -468,8 +517,137 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
             }
         }
 
+        private void readProviderBufferComplete(int res, int flags, short data, int outstanding,
+                                                IoUringRecvByteAllocatorHandle allocHandle,
+                                                ChannelPipeline pipeline) {
+            boolean rearm = (flags & Native.IORING_CQE_F_MORE) == 0;
+            boolean useBufferRing = (flags & Native.IORING_CQE_F_BUFFER) != 0;
+            boolean multishot = outstanding == -1;
+            MsgHdrMemory hdr = recvmsgHdrs.hdr(data);
+            if (rearm) {
+                readId = 0;
+                readOpCode = 0;
+                recvmsgHdrs.setId(data, MsgHdrMemoryArray.NO_ID);
+            }
+
+            try {
+                if (res == Native.ERRNO_ECANCELED_NEGATIVE) {
+                    if (rearm) {
+                        recvmsgHdrs.clear();
+                    }
+                    return;
+                }
+                if (res < 0) {
+                    if (res == Native.ERRNO_NOBUFS_NEGATIVE) {
+                        if (!bufferRing.expand()) {
+                            pipeline.fireUserEventTriggered(bufferRing.getExhaustedEvent());
+                        }
+                        if (rearm) {
+                            recvmsgHdrs.clear();
+                        }
+                        scheduleRead(allocHandle.isFirstRead());
+                        return;
+                    }
+                    if (multishot && res == Native.ERRNO_EFAULT_NEGATIVE) {
+                        throw new IllegalStateException(
+                                "io_uring recvmsg multishot selected a provider buffer that is too small. " +
+                                        "Increase the buffer ring chunk size.");
+                    }
+                    allocHandle.lastBytesRead(ioResult("io_uring recvmsg", res));
+                } else if (res == 0) {
+                    allocHandle.lastBytesRead(0);
+                    if (hdr.hasPort(IoUringDatagramChannel.this)) {
+                        allocHandle.incMessagesRead(1);
+                        DatagramPacket packet = hdr.getWithProviderBuffer(
+                                IoUringDatagramChannel.this, registration().attachment(), Unpooled.EMPTY_BUFFER);
+                        pipeline.fireChannelRead(packet);
+                    }
+                } else {
+                    assert useBufferRing;
+                    short bid = (short) (flags >> Native.IORING_CQE_BUFFER_SHIFT);
+                    boolean more = (flags & Native.IORING_CQE_F_BUF_MORE) != 0;
+                    int attemptedBytesRead = bufferRing.attemptedBytesRead(bid);
+                    ByteBuf buffer = bufferRing.useBuffer(bid, res, more);
+                    allocHandle.attemptedBytesRead(attemptedBytesRead);
+                    DatagramPacket packet = null;
+                    try {
+                        if (multishot) {
+                            packet = hdr.getWithMultishotProviderBuffer(
+                                    IoUringDatagramChannel.this, registration().attachment(), buffer, res);
+                            buffer = null;
+                            // meta data is not empty but payload is empty
+                            allocHandle.lastBytesRead(Math.max(1, packet.content().readableBytes()));
+                        } else if (hdr.hasPort(IoUringDatagramChannel.this)) {
+                            packet = hdr.getWithProviderBuffer(
+                                    IoUringDatagramChannel.this, registration().attachment(), buffer);
+                            buffer = null;
+                            allocHandle.lastBytesRead(res);
+                        } else {
+                            allocHandle.lastBytesRead(0);
+                        }
+                        if (packet != null) {
+                            allocHandle.incMessagesRead(1);
+                            pipeline.fireChannelRead(packet);
+                        }
+                    } finally {
+                        if (buffer != null) {
+                            buffer.release();
+                        }
+                    }
+                }
+            } catch (Throwable t) {
+                Throwable e = (connected && t instanceof NativeIoException) ?
+                        translateForConnected((NativeIoException) t) : t;
+                allocHandle.lastBytesRead(0);
+                allocHandle.readComplete();
+                if (rearm) {
+                    recvmsgHdrs.clear();
+                }
+                pipeline.fireExceptionCaught(e);
+                pipeline.fireChannelReadComplete();
+                return;
+            }
+
+            if (rearm) {
+                recvmsgHdrs.clear();
+            }
+            if (allocHandle.lastBytesRead() > 0 &&
+                    allocHandle.continueReading(UncheckedBooleanSupplier.TRUE_SUPPLIER) &&
+                    (!IoUring.isCqeFSockNonEmptySupported() ||
+                            (flags & Native.IORING_CQE_F_SOCK_NONEMPTY) != 0)) {
+                if (rearm) {
+                    scheduleRead(false);
+                }
+            } else {
+                allocHandle.readComplete();
+                pipeline.fireChannelReadComplete();
+            }
+        }
+
+        private int calculateRecvFlags(boolean first) {
+            if (first) {
+                return 0;
+            }
+            return Native.MSG_DONTWAIT;
+        }
+
+        private short calculateRecvIoPrio(boolean first, boolean socketIsEmpty) {
+            if (first) {
+                return socketIsEmpty && IoUring.isCqeFSockNonEmptySupported() ?
+                        Native.IORING_RECVSEND_POLL_FIRST : 0;
+            }
+            return 0;
+        }
+
         @Override
         protected int scheduleRead0(boolean first, boolean socketIsEmpty) {
+            assert readId == 0 : readId;
+
+            int datagramSize = ((IoUringDatagramChannelConfig) config()).getMaxDatagramPayloadSize();
+            if (datagramSize == 0 && bufferRing != null && bufferRing.isUsable()) {
+                return scheduleReadProviderBuffer(bufferRing, first, socketIsEmpty);
+            }
+
             final IoUringRecvByteAllocatorHandle allocHandle = recvBufAllocHandle();
             ByteBuf byteBuf = allocHandle.allocate(alloc());
             assert readBuffer == null;
@@ -477,7 +655,6 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
 
             int writable = byteBuf.writableBytes();
             allocHandle.attemptedBytesRead(writable);
-            int datagramSize = ((IoUringDatagramChannelConfig) config()).getMaxDatagramPayloadSize();
 
             int numDatagram = datagramSize == 0 ? 1 : Math.max(1, byteBuf.writableBytes() / datagramSize);
 
@@ -489,6 +666,50 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
                 byteBuf.release();
             }
             return scheduled;
+        }
+
+        private int scheduleReadProviderBuffer(IoUringBufferRing bufferRing, boolean first, boolean socketIsEmpty) {
+            short bgId = bufferRing.bufferGroupId();
+            MsgHdrMemory hdr = recvmsgHdrs.nextHdr();
+            if (hdr == null) {
+                return 0;
+            }
+            try {
+                boolean multishot = IoUring.isRecvMultishotEnabled();
+                byte flags = (byte) Native.IOSQE_BUFFER_SELECT;
+                short ioPrio;
+                final int msgFlags;
+                if (multishot) {
+                    hdr.setRecvmsgMultishotProviderBuffer(socket);
+                    ioPrio = Native.IORING_RECV_MULTISHOT;
+                    msgFlags = 0;
+                } else {
+                    hdr.setRecvmsgProviderBuffer(socket, recvBufAllocHandle().guess());
+                    ioPrio = calculateRecvIoPrio(first, socketIsEmpty);
+                    msgFlags = calculateRecvFlags(first);
+                }
+
+                int fd = fd().intValue();
+                IoRegistration registration = registration();
+                IoUringIoOps ops = IoUringIoOps.newRecvmsg(
+                        fd, flags, ioPrio, msgFlags, hdr.address(), hdr.idx(), bgId);
+                readId = registration.submit(ops);
+                readOpCode = Native.IORING_OP_RECVMSG;
+                if (readId == 0) {
+                    readOpCode = 0;
+                    recvmsgHdrs.restoreNextHdr(hdr);
+                    return 0;
+                }
+                recvmsgHdrs.setId(hdr.idx(), readId);
+                if (multishot) {
+                    return -1;
+                }
+                return 1;
+            } catch (IllegalArgumentException e) {
+                recvmsgHdrs.restoreNextHdr(hdr);
+                pipeline().fireExceptionCaught(e);
+                return 0;
+            }
         }
 
         private int scheduleRecvmsg(ByteBuf byteBuf, int numDatagram, int datagramSize) {
@@ -670,10 +891,27 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
 
     @Override
     protected void cancelOutstandingReads(IoRegistration registration, int numOutstandingReads) {
+        if (readId != 0) {
+            assert numOutstandingReads == 1 || numOutstandingReads == -1;
+            cancelProviderBufferRead(registration);
+            return;
+        }
         if (numOutstandingReads > 0) {
             int canceled = cancel(registration, Native.IORING_OP_RECVMSG, recvmsgHdrs);
             assert canceled == numOutstandingReads;
         }
+    }
+
+    private boolean cancelProviderBufferRead(IoRegistration registration) {
+        if (readId == 0) {
+            return false;
+        }
+        IoUringIoOps ops = IoUringIoOps.newAsyncCancel((byte) 0, readId, readOpCode);
+        long id = registration.submit(ops);
+        assert id != 0;
+        readId = 0;
+        readOpCode = 0;
+        return true;
     }
 
     @Override

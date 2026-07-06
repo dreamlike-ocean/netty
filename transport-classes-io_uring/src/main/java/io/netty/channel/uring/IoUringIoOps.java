@@ -440,10 +440,15 @@ public final class IoUringIoOps implements IoOps {
      * @return                                      ops.
      */
     static IoUringIoOps newRecvmsg(int fd, byte flags, int msgFlags, long memoryAddress, short data) {
+        return newRecvmsg(fd, flags, (short) 0, msgFlags, memoryAddress, data, (short) 0);
+    }
+
+    static IoUringIoOps newRecvmsg(
+            int fd, byte flags, short ioPrio, int msgFlags, long memoryAddress, short data, short bgId) {
         // See https://github.com/axboe/liburing/blob/liburing-2.8/src/include/liburing.h#L523
         return new IoUringIoOps(
-                Native.IORING_OP_RECVMSG, flags, (short) 0, fd, 0L, memoryAddress, 1, msgFlags, data,
-                (short) 0, (short) 0, 0, 0);
+                Native.IORING_OP_RECVMSG, flags, ioPrio, fd, 0L, memoryAddress, 1, msgFlags, data,
+                bgId, (short) 0, 0, 0);
     }
 
     /**

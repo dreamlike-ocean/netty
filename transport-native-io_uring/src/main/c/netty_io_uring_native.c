@@ -72,6 +72,13 @@
 #define STATICALLY_CLASSNAME "io/netty/channel/uring/NativeStaticallyReferencedJniMethods"
 #define LIBRARYNAME "netty_transport_native_io_uring42"
 
+struct netty_io_uring_recvmsg_out {
+    uint32_t namelen;
+    uint32_t controllen;
+    uint32_t payloadlen;
+    uint32_t flags;
+};
+
 static jclass longArrayClass = NULL;
 static char* staticPackagePrefix = NULL;
 static int register_unix_called = 0;
@@ -625,6 +632,18 @@ static jint netty_io_uring_msghdrOffsetofMsgFlags(JNIEnv* env, jclass clazz) {
     return offsetof(struct msghdr, msg_flags);
 }
 
+static jint netty_io_uring_sizeofIoUringRecvmsgOut(JNIEnv* env, jclass clazz) {
+    return sizeof(struct netty_io_uring_recvmsg_out);
+}
+
+static jint netty_io_uring_ioUringRecvmsgOutOffsetofPayloadlen(JNIEnv* env, jclass clazz) {
+    return offsetof(struct netty_io_uring_recvmsg_out, payloadlen);
+}
+
+static jint netty_io_uring_ioUringRecvmsgOutOffsetofFlags(JNIEnv* env, jclass clazz) {
+    return offsetof(struct netty_io_uring_recvmsg_out, flags);
+}
+
 static jint netty_io_uring_cmsghdrOffsetofCmsgLen(JNIEnv* env, jclass clazz) {
     return offsetof(struct cmsghdr, cmsg_len);
 }
@@ -697,6 +716,10 @@ static jint netty_io_uring_enobufs(JNIEnv* env, jclass clazz) {
     return ENOBUFS;
 }
 
+static jint netty_io_uring_efault(JNIEnv* env, jclass clazz) {
+    return EFAULT;
+}
+
 static jint netty_io_uring_pollin(JNIEnv* env, jclass clazz) {
     return POLLIN;
 }
@@ -731,6 +754,10 @@ static jint netty_io_uring_BufferSelect(JNIEnv* env, jclass clazz) {
 
 static jint netty_io_uring_msgDontwait(JNIEnv* env, jclass clazz) {
     return MSG_DONTWAIT;
+}
+
+static jint netty_io_uring_msgTrunc(JNIEnv* env, jclass clazz) {
+    return MSG_TRUNC;
 }
 
 static jint netty_io_uring_msgFastopen(JNIEnv* env, jclass clazz) {
@@ -816,9 +843,13 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "msghdrOffsetofMsgControl", "()I", (void *) netty_io_uring_msghdrOffsetofMsgControl },
   { "msghdrOffsetofMsgControllen", "()I", (void *) netty_io_uring_msghdrOffsetofMsgControllen },
   { "msghdrOffsetofMsgFlags", "()I", (void *) netty_io_uring_msghdrOffsetofMsgFlags },
+  { "sizeofIoUringRecvmsgOut", "()I", (void *) netty_io_uring_sizeofIoUringRecvmsgOut },
+  { "ioUringRecvmsgOutOffsetofPayloadlen", "()I", (void *) netty_io_uring_ioUringRecvmsgOutOffsetofPayloadlen },
+  { "ioUringRecvmsgOutOffsetofFlags", "()I", (void *) netty_io_uring_ioUringRecvmsgOutOffsetofFlags },
   { "etime", "()I", (void *) netty_io_uring_etime },
   { "ecanceled", "()I", (void *) netty_io_uring_ecanceled },
   { "enobufs", "()I", (void*) netty_io_uring_enobufs},
+  { "efault", "()I", (void*) netty_io_uring_efault},
   { "pollin", "()I", (void *) netty_io_uring_pollin },
   { "pollout", "()I", (void *) netty_io_uring_pollout },
   { "pollrdhup", "()I", (void *) netty_io_uring_pollrdhup },
@@ -828,6 +859,7 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "iosqeDrain", "()I", (void *) netty_io_uring_iosqeDrain },
   { "iosqeBufferSelect", "()I", (void *) netty_io_uring_BufferSelect },
   { "msgDontwait", "()I", (void *) netty_io_uring_msgDontwait },
+  { "msgTrunc", "()I", (void *) netty_io_uring_msgTrunc },
   { "msgFastopen", "()I", (void *) netty_io_uring_msgFastopen },
   { "solUdp", "()I", (void *) netty_io_uring_solUdp },
   { "solSocket", "()I", (void *) netty_io_uring_solSocket },
@@ -974,4 +1006,3 @@ JNIEXPORT void JNI_OnUnload(JavaVM* vm, void* reserved) {
     netty_jni_util_JNI_OnUnload(vm, reserved, netty_iouring_native_JNI_OnUnload);
 }
 #endif /* NETTY_IO_URING_BUILD_STATIC */
-

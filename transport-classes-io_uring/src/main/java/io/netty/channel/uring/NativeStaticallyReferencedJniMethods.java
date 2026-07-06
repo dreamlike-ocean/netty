@@ -65,9 +65,13 @@ final class NativeStaticallyReferencedJniMethods {
     static native int msghdrOffsetofMsgControl();
     static native int msghdrOffsetofMsgControllen();
     static native int msghdrOffsetofMsgFlags();
+    static native int sizeofIoUringRecvmsgOut();
+    static native int ioUringRecvmsgOutOffsetofPayloadlen();
+    static native int ioUringRecvmsgOutOffsetofFlags();
     static native int etime();
     static native int ecanceled();
     static native int enobufs();
+    static native int efault();
     static native int pollin();
     static native int pollout();
     static native int pollrdhup();
@@ -76,6 +80,7 @@ final class NativeStaticallyReferencedJniMethods {
     static native int iosqeLink();
     static native int iosqeDrain();
     static native int msgDontwait();
+    static native int msgTrunc();
     static native int iosqeBufferSelect();
     static native int msgFastopen();
     static native int cmsgSpace();
