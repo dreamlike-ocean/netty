@@ -128,7 +128,10 @@ public class IoUringCustomIoHandleTest {
             long submittedId = registration.submit(linkedOps);
 
             assertNotEquals(0L, submittedId);
-            assertEquals(submittedId, linkedOps.tokenAtIndex(submittedId, 0));
+            for (int i = 0; i < linkedOps.size(); i++) {
+                long expected = PendingOpMap.token(PendingOpMap.tokenSequence(submittedId) + i);
+                assertEquals(expected, linkedOps.tokenAtIndex(submittedId, i));
+            }
             assertEquals(100_000L, handle.awaitUserData());
             assertEquals(100_001L, handle.awaitUserData());
             assertEquals(100_002L, handle.awaitUserData());

@@ -79,8 +79,13 @@ public final class IoUringLinkedIoOps implements IoOps {
         if (submittedId >= 0) {
             throw new IllegalArgumentException("submittedId is not a valid linked operation identifier");
         }
-        long sequence = PendingOpMap.tokenSequence(submittedId);
-        return PendingOpMap.token(sequence + index);
+        // submitLinked allocates one contiguous slow-path token range,
+        // so adding the index preserves the sign bit.
+        long token = submittedId + index;
+        if (token >= 0) {
+            throw new IllegalArgumentException("submittedId is not a valid linked operation identifier");
+        }
+        return token;
     }
 
     public int size() {
