@@ -118,6 +118,8 @@ public class IoUringCustomIoHandleTest {
 
     @Test
     public void testLinkedOpsPreserveSubmittedUserData() throws Exception {
+        assumeTrue(IoUringLinkedIoOps.isSupported(),
+                "Linked operations require IORING_SETUP_SUBMIT_ALL support");
         IoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory());
         try {
             TestHandle handle = new TestHandle();
@@ -146,6 +148,28 @@ public class IoUringCustomIoHandleTest {
         }
     }
 
+    @Test
+    public void testLinkedOpsNormalizeLinkFlags() {
+        assumeTrue(IoUringLinkedIoOps.isSupported(),
+                "Linked operations require IORING_SETUP_SUBMIT_ALL support");
+        byte inputFlags = (byte) (Native.IOSQE_LINK | Native.IOSQE_IO_HARDLINK);
+        int linkFlags = Native.IOSQE_LINK | Native.IOSQE_IO_HARDLINK;
+
+        IoUringLinkedIoOps softLinked = IoUringLinkedIoOps.of(
+                nop(inputFlags, 1L), nop(inputFlags, 2L), nop(inputFlags, 3L));
+        for (int i = 0; i < softLinked.size() - 1; i++) {
+            assertEquals(Native.IOSQE_LINK, softLinked.op(i).flags() & linkFlags);
+        }
+        assertEquals(0, softLinked.op(softLinked.size() - 1).flags() & linkFlags);
+
+        IoUringLinkedIoOps hardLinked = IoUringLinkedIoOps.of(true,
+                nop(inputFlags, 1L), nop(inputFlags, 2L), nop(inputFlags, 3L));
+        for (int i = 0; i < hardLinked.size() - 1; i++) {
+            assertEquals(Native.IOSQE_IO_HARDLINK, hardLinked.op(i).flags() & linkFlags);
+        }
+        assertEquals(0, hardLinked.op(hardLinked.size() - 1).flags() & linkFlags);
+    }
+
     private static IoRegistration register(IoEventLoopGroup group, IoUringIoHandle handle) {
         IoEventLoop loop = group.next();
         return loop.register(handle).syncUninterruptibly().getNow();
@@ -156,7 +180,11 @@ public class IoUringCustomIoHandleTest {
     }
 
     private static IoUringIoOps nop(long userData) {
-        return new IoUringIoOps(Native.IORING_OP_NOP, (byte) 0,
+        return nop((byte) 0, userData);
+    }
+
+    private static IoUringIoOps nop(byte flags, long userData) {
+        return new IoUringIoOps(Native.IORING_OP_NOP, flags,
                 (short) 0, -1, 0, 0, 0, 0, userData, (short) 0, (short) 0, 0, 0);
     }
 

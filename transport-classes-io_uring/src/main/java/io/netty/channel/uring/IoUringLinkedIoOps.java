@@ -21,6 +21,7 @@ import io.netty.channel.IoOps;
  * A linked chain submitted as contiguous SQEs, with submit returning the first operation id
  */
 public final class IoUringLinkedIoOps implements IoOps {
+    private static final byte LINKED_FLAGS = (byte) (Native.IOSQE_LINK | Native.IOSQE_IO_HARDLINK);
     private final IoUringIoOps[] ops;
 
     private IoUringLinkedIoOps(IoUringIoOps[] ops) {
@@ -28,13 +29,40 @@ public final class IoUringLinkedIoOps implements IoOps {
     }
 
     /**
-     * Create a new linked chain. The returned chain owns normalized copies of the supplied operations:
-     * {@code IOSQE_LINK} is set on every operation except the last one and cleared on the last operation.
+     * Returns whether linked operation submission is supported.
+     *
+     * @return {@code true} if linked operation submission is supported.
+     */
+    public static boolean isSupported() {
+        return IoUring.isSetupSubmitAllSupported();
+    }
+
+    /**
+     * Create a new soft-linked chain. The returned chain owns normalized copies of the supplied operations:
+     * {@code IOSQE_LINK} is set on every operation except the last one and all link flags are cleared on the last
+     * operation.
      *
      * @param ops   operations to submit as one linked chain.
      * @return      linked operations.
      */
     public static IoUringLinkedIoOps of(IoUringIoOps... ops) {
+        return of(false, ops);
+    }
+
+    /**
+     * Create a new linked chain. The returned chain owns normalized copies of the supplied operations. Every operation
+     * except the last one uses {@code IOSQE_IO_HARDLINK} when {@code hardLink} is {@code true}, or {@code IOSQE_LINK}
+     * otherwise. All link flags are cleared on the last operation.
+     *
+     * @param hardLink  {@code true} to use hard links, {@code false} to use soft links.
+     * @param ops       operations to submit as one linked chain.
+     * @return          linked operations.
+     */
+    public static IoUringLinkedIoOps of(boolean hardLink, IoUringIoOps... ops) {
+        if (!isSupported()) {
+            throw new UnsupportedOperationException(
+                    "IoUringLinkedIoOps requires IORING_SETUP_SUBMIT_ALL support");
+        }
         if (ops == null) {
             throw new NullPointerException("ops");
         }
@@ -42,6 +70,7 @@ public final class IoUringLinkedIoOps implements IoOps {
             throw new IllegalArgumentException("linked ops must contain at least two operations; submit a single "
                     + "IoUringIoOps directly");
         }
+        byte linkedFlag = (byte) (hardLink ? Native.IOSQE_IO_HARDLINK : Native.IOSQE_LINK);
         IoUringIoOps[] copy = new IoUringIoOps[ops.length];
         for (int i = 0; i < ops.length; i++) {
             IoUringIoOps op = ops[i];
@@ -53,7 +82,7 @@ public final class IoUringLinkedIoOps implements IoOps {
                         + "one terminal CQE per SQE so completions can be matched back to the original operation");
             }
 
-            byte flags = normalizeLinkFlag(op.flags(), i == ops.length - 1);
+            byte flags = normalizeLinkFlags(op.flags(), i == ops.length - 1, linkedFlag);
             copy[i] = flags == op.flags() ? op : withFlags(op, flags);
         }
         return new IoUringLinkedIoOps(copy);
@@ -76,16 +105,7 @@ public final class IoUringLinkedIoOps implements IoOps {
         if (index < 0 || index >= ops.length) {
             throw new IndexOutOfBoundsException("index=" + index + ", size=" + ops.length);
         }
-        if (submittedId >= 0) {
-            throw new IllegalArgumentException("submittedId is not a valid linked operation identifier");
-        }
-        // submitLinked allocates one contiguous slow-path token range,
-        // so adding the index preserves the sign bit.
-        long token = submittedId + index;
-        if (token >= 0) {
-            throw new IllegalArgumentException("submittedId is not a valid linked operation identifier");
-        }
-        return token;
+        return PendingOpMap.tokenAtIndex(submittedId, index, ops.length);
     }
 
     public int size() {
@@ -96,8 +116,12 @@ public final class IoUringLinkedIoOps implements IoOps {
         return ops[index];
     }
 
-    private static byte normalizeLinkFlag(byte flags, boolean last) {
-        return last ? (byte) (flags & ~Native.IOSQE_LINK) : (byte) (flags | Native.IOSQE_LINK);
+    private static byte normalizeLinkFlags(byte flags, boolean last, byte linkFlag) {
+        flags &= (byte) ~LINKED_FLAGS;
+        if (last) {
+            return flags;
+        }
+        return (byte) (flags | linkFlag);
     }
 
     private static IoUringIoOps withFlags(IoUringIoOps op, byte flags) {

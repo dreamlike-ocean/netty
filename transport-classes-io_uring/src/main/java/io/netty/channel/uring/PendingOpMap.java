@@ -192,6 +192,17 @@ final class PendingOpMap {
         return token & Long.MAX_VALUE;
     }
 
+    static long tokenAtIndex(long firstToken, int index, int count) {
+        if (firstToken >= 0) {
+            throw new IllegalArgumentException("submittedId is not a slow-path operation identifier");
+        }
+        long firstSequence = tokenSequence(firstToken);
+        if (firstSequence < 3 || firstSequence > Long.MAX_VALUE - count + 1) {
+            throw new IllegalArgumentException("submittedId is not a valid linked operation identifier");
+        }
+        return token(firstSequence + index);
+    }
+
     private static int hashIndex(long key, int mask) {
         if (mask == 0) {
             return 0;
