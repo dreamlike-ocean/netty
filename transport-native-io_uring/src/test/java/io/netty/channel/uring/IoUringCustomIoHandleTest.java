@@ -31,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -115,6 +116,56 @@ public class IoUringCustomIoHandleTest {
         }
     }
 
+    @Test
+    public void testLinkedOpsPreserveSubmittedUserData() throws Exception {
+        IoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory());
+        try {
+            TestHandle handle = new TestHandle();
+            IoRegistration registration = register(group, handle);
+
+            IoUringLinkedIoOps linkedOps = IoUringLinkedIoOps.of(
+                    nop(100_000L), nop(100_001L), nop(100_002L));
+            long submittedId = registration.submit(linkedOps);
+
+            assertNotEquals(0L, submittedId);
+            for (int i = 0; i < linkedOps.size(); i++) {
+                long expected = PendingOpMap.token(PendingOpMap.tokenSequence(submittedId) + i);
+                assertEquals(expected, linkedOps.tokenAtIndex(submittedId, i));
+            }
+            assertEquals(100_000L, handle.awaitUserData());
+            assertEquals(100_001L, handle.awaitUserData());
+            assertEquals(100_002L, handle.awaitUserData());
+
+            long fastPathId = registration.submit(nop(123L));
+            assertThrows(IllegalArgumentException.class, () -> linkedOps.tokenAtIndex(fastPathId, 0));
+            assertEquals(123L, handle.awaitUserData());
+
+            assertTrue(registration.cancel());
+        } finally {
+            shutdown(group);
+        }
+    }
+
+    @Test
+    public void testLinkedOpsNormalizeLinkFlags() {
+        byte inputFlags = (byte) (Native.IOSQE_LINK | Native.IOSQE_IO_HARDLINK);
+        int linkFlags = Native.IOSQE_LINK | Native.IOSQE_IO_HARDLINK;
+
+        IoUringLinkedIoOps softLinked = IoUringLinkedIoOps.of(
+                nop(inputFlags, 1L), nop(inputFlags, 2L), nop(inputFlags, 3L));
+        for (int i = 0; i < softLinked.size() - 1; i++) {
+            assertEquals(Native.IOSQE_LINK, softLinked.op(i).flags() & linkFlags);
+        }
+        assertEquals(0, softLinked.op(softLinked.size() - 1).flags() & linkFlags);
+
+        IoUringLinkedIoOps hardLinked = IoUringLinkedIoOps.of(true,
+                nop(inputFlags, 1L), nop(inputFlags, 2L), nop(inputFlags, 3L));
+        for (int i = 0; i < hardLinked.size() - 1; i++) {
+            assertEquals(Native.IOSQE_IO_HARDLINK, hardLinked.op(i).flags() & linkFlags);
+        }
+        assertEquals(0, hardLinked.op(hardLinked.size() - 1).flags() & linkFlags);
+    }
+
     private static IoRegistration register(IoEventLoopGroup group, IoUringIoHandle handle) {
         IoEventLoop loop = group.next();
         return loop.register(handle).syncUninterruptibly().getNow();
@@ -125,7 +176,11 @@ public class IoUringCustomIoHandleTest {
     }
 
     private static IoUringIoOps nop(long userData) {
-        return new IoUringIoOps(Native.IORING_OP_NOP, (byte) 0,
+        return nop((byte) 0, userData);
+    }
+
+    private static IoUringIoOps nop(byte flags, long userData) {
+        return new IoUringIoOps(Native.IORING_OP_NOP, flags,
                 (short) 0, -1, 0, 0, 0, 0, userData, (short) 0, (short) 0, 0, 0);
     }
 

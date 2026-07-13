@@ -53,6 +53,14 @@ final class PendingOpMap {
         return token(sequence);
     }
 
+    long nextTokens(long count) {
+        long sequence = nextSequence.getAndAdd(count);
+        if (sequence <= 0 || sequence > Long.MAX_VALUE - count + 1) {
+            throw new IllegalStateException("slow path sequence overflow");
+        }
+        return token(sequence);
+    }
+
     void registerNormal(long token, int registrationId, byte op, long userData) {
         for (;;) {
             int startIndex = hashIndex(token, mask);
@@ -182,6 +190,17 @@ final class PendingOpMap {
 
     static long tokenSequence(long token) {
         return token & Long.MAX_VALUE;
+    }
+
+    static long tokenAtIndex(long firstToken, int index, int count) {
+        if (firstToken >= 0) {
+            throw new IllegalArgumentException("submittedId is not a slow-path operation identifier");
+        }
+        long firstSequence = tokenSequence(firstToken);
+        if (firstSequence < 3 || firstSequence > Long.MAX_VALUE - count + 1) {
+            throw new IllegalArgumentException("submittedId is not a valid linked operation identifier");
+        }
+        return token(firstSequence + index);
     }
 
     private static int hashIndex(long key, int mask) {

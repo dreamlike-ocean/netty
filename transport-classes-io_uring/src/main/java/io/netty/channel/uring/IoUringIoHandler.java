@@ -581,6 +581,9 @@ public final class IoUringIoHandler implements IoHandler {
 
         @Override
         public long submit(IoOps ops) {
+            if (ops instanceof IoUringLinkedIoOps) {
+                return submitLinked((IoUringLinkedIoOps) ops);
+            }
             IoUringIoOps ioOps = (IoUringIoOps) ops;
             if (!isValid()) {
                 return INVALID_ID;
@@ -610,6 +613,26 @@ public final class IoUringIoHandler implements IoHandler {
             return token;
         }
 
+        private long submitLinked(IoUringLinkedIoOps linkedOps) {
+            if (!isValid()) {
+                return INVALID_ID;
+            }
+            SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
+            int size = linkedOps.size();
+            if (size > submissionQueue.ringEntries) {
+                throw new IllegalArgumentException(
+                        "linked ops size " + size + " exceeds ring entries "
+                        + submissionQueue.ringEntries);
+            }
+            long firstToken = pendingOps.nextTokens(size);
+            if (executor.isExecutorThread(Thread.currentThread())) {
+                submitLinked0(linkedOps, firstToken);
+            } else {
+                executor.execute(() -> submitLinked0(linkedOps, firstToken));
+            }
+            return firstToken;
+        }
+
         private void submitFastPath0(IoUringIoOps ioOps, long seq) {
             ringBuffer.ioUringSubmissionQueue().enqueueSqe(ioOps.opcode(), ioOps.flags(), ioOps.ioPrio(),
                     ioOps.fd(), ioOps.union1(), ioOps.union2(), ioOps.len(), ioOps.union3(), seq,
@@ -625,6 +648,21 @@ public final class IoUringIoHandler implements IoHandler {
                     ioOps.union4(), ioOps.personality(), ioOps.union5(), ioOps.union6()
             );
             outstandingCompletions++;
+        }
+
+        private void submitLinked0(IoUringLinkedIoOps linkedOps, long firstToken) {
+            SubmissionQueue submissionQueue = ringBuffer.ioUringSubmissionQueue();
+            submissionQueue.ensureWritable(linkedOps.size());
+            for (int i = 0; i < linkedOps.size(); i++) {
+                long token = linkedOps.tokenAtIndex(firstToken, i);
+                IoUringIoOps ioOps = linkedOps.op(i);
+                pendingOps.registerNormal(token, id, ioOps.opcode(), ioOps.userData());
+                submissionQueue.enqueueSqe(ioOps.opcode(), ioOps.flags(), ioOps.ioPrio(),
+                        ioOps.fd(), ioOps.union1(), ioOps.union2(), ioOps.len(), ioOps.union3(), token,
+                        ioOps.union4(), ioOps.personality(), ioOps.union5(), ioOps.union6()
+                );
+            }
+            outstandingCompletions += linkedOps.size();
         }
 
         private boolean canUseFastPath(long userData) {

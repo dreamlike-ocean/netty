@@ -721,6 +721,10 @@ static jint netty_io_uring_iosqeLink(JNIEnv* env, jclass clazz) {
     return IOSQE_IO_LINK;
 }
 
+static jint netty_io_uring_iosqeHardLink(JNIEnv* env, jclass clazz) {
+    return IOSQE_IO_HARDLINK;
+}
+
 static jint netty_io_uring_iosqeDrain(JNIEnv* env, jclass clazz) {
     return IOSQE_IO_DRAIN;
 }
@@ -825,6 +829,7 @@ static const JNINativeMethod statically_referenced_fixed_method_table[] = {
   { "ioringEnterGetevents", "()I", (void *) netty_io_uring_ioringEnterGetevents },
   { "iosqeAsync", "()I", (void *) netty_io_uring_iosqeAsync },
   { "iosqeLink", "()I", (void *) netty_io_uring_iosqeLink },
+  { "iosqeHardLink", "()I", (void *) netty_io_uring_iosqeHardLink },
   { "iosqeDrain", "()I", (void *) netty_io_uring_iosqeDrain },
   { "iosqeBufferSelect", "()I", (void *) netty_io_uring_BufferSelect },
   { "msgDontwait", "()I", (void *) netty_io_uring_msgDontwait },
