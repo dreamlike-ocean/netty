@@ -118,8 +118,6 @@ public class IoUringCustomIoHandleTest {
 
     @Test
     public void testLinkedOpsPreserveSubmittedUserData() throws Exception {
-        assumeTrue(IoUringLinkedIoOps.isSupported(),
-                "Linked operations require IORING_SETUP_SUBMIT_ALL support");
         IoEventLoopGroup group = new MultiThreadIoEventLoopGroup(1, IoUringIoHandler.newFactory());
         try {
             TestHandle handle = new TestHandle();
@@ -150,8 +148,6 @@ public class IoUringCustomIoHandleTest {
 
     @Test
     public void testLinkedOpsNormalizeLinkFlags() {
-        assumeTrue(IoUringLinkedIoOps.isSupported(),
-                "Linked operations require IORING_SETUP_SUBMIT_ALL support");
         byte inputFlags = (byte) (Native.IOSQE_LINK | Native.IOSQE_IO_HARDLINK);
         int linkFlags = Native.IOSQE_LINK | Native.IOSQE_IO_HARDLINK;
 

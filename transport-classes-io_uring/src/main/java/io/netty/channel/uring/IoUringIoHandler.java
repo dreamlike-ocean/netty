@@ -581,7 +581,7 @@ public final class IoUringIoHandler implements IoHandler {
 
         @Override
         public long submit(IoOps ops) {
-            if (IoUringLinkedIoOps.isSupported() && ops instanceof IoUringLinkedIoOps) {
+            if (ops instanceof IoUringLinkedIoOps) {
                 return submitLinked((IoUringLinkedIoOps) ops);
             }
             IoUringIoOps ioOps = (IoUringIoOps) ops;

@@ -29,15 +29,6 @@ public final class IoUringLinkedIoOps implements IoOps {
     }
 
     /**
-     * Returns whether linked operation submission is supported.
-     *
-     * @return {@code true} if linked operation submission is supported.
-     */
-    public static boolean isSupported() {
-        return IoUring.isSetupSubmitAllSupported();
-    }
-
-    /**
      * Create a new soft-linked chain. The returned chain owns normalized copies of the supplied operations:
      * {@code IOSQE_LINK} is set on every operation except the last one and all link flags are cleared on the last
      * operation.
@@ -59,10 +50,6 @@ public final class IoUringLinkedIoOps implements IoOps {
      * @return          linked operations.
      */
     public static IoUringLinkedIoOps of(boolean hardLink, IoUringIoOps... ops) {
-        if (!isSupported()) {
-            throw new UnsupportedOperationException(
-                    "IoUringLinkedIoOps requires IORING_SETUP_SUBMIT_ALL support");
-        }
         if (ops == null) {
             throw new NullPointerException("ops");
         }
