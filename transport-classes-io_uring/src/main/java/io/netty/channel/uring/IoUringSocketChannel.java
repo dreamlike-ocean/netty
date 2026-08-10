@@ -26,6 +26,7 @@ import io.netty.channel.unix.IovArray;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayDeque;
+import java.util.List;
 import java.util.Queue;
 
 import static io.netty.channel.unix.Errors.ioResult;
@@ -98,6 +99,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                     if (writeId == 0) {
                         return 0;
                     }
+                    setInflightWriteMessage(buf);
                     return 1;
                 }
                 // Should not use send_zc, just use normal write.
@@ -117,6 +119,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
 
                 IovArray iovArray = handler.iovArray();
                 int offset = iovArray.count();
+                IovArrayReferenceCollector collector = newIovArrayReferenceCollector(iovArray);
                 // Limit to the maximum number of fragments to ensure we don't get an error when we have too many
                 // buffers.
                 iovArray.maxCount(Native.MAX_SKB_FRAGS);
@@ -128,7 +131,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                                 ByteBuf buf = (ByteBuf) msg;
                                 int length = buf.readableBytes();
                                 if (ioUringSocketChannelConfig.shouldWriteZeroCopy(length)) {
-                                    return iovArray.processMessage(msg);
+                                    return collector.processMessage(msg);
                                 }
                             }
                             return false;
@@ -159,9 +162,9 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
         }
 
         @Override
-        protected ChannelOutboundBuffer.MessageProcessor filterWriteMultiple(IovArray iovArray) {
+        protected ChannelOutboundBuffer.MessageProcessor filterWriteMultiple(IovArrayReferenceCollector collector) {
             if (!IoUring.isSendmsgZcSupported()) {
-                return super.filterWriteMultiple(iovArray);
+                return super.filterWriteMultiple(collector);
             }
             IoUringSocketChannelConfig ioUringSocketChannelConfig = (IoUringSocketChannelConfig) config();
             return new ChannelOutboundBuffer.MessageProcessor() {
@@ -174,7 +177,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                             return false;
                         }
                     }
-                    return iovArray.processMessage(msg);
+                    return collector.processMessage(msg);
                 }
             };
         }
@@ -197,6 +200,19 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 // See https://man7.org/linux/man-pages/man2/io_uring_enter.2.html section: IORING_OP_SEND_ZC
                 writeId = 0;
                 writeOpCode = 0;
+
+                if (channelOutboundBuffer == null) {
+                    // shutdownOutput() already dropped the outbound buffer. When IORING_CQE_F_MORE is
+                    // set the kernel still owns the memory until the notification arrives: move the
+                    // retained messages into the zero-copy queue so the notification releases them
+                    // just like in the normal path, then release the retain taken by
+                    // recordInflightMessage().
+                    if ((flags & Native.IORING_CQE_F_MORE) != 0) {
+                        addInflightToZcWriteQueue();
+                    }
+                    releaseInflightWriteMessage();
+                    return true;
+                }
 
                 boolean more = (flags & Native.IORING_CQE_F_MORE) != 0;
                 if (more) {
@@ -309,6 +325,20 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
             } finally {
                 zcWriteQueue.add(ZC_BATCH_MARKER);
             }
+        }
+
+        private void addInflightToZcWriteQueue() {
+            if (zcWriteQueue == null) {
+                zcWriteQueue = new ArrayDeque<>(8);
+            }
+            List<Object> messages = inflightWriteMessages;
+            if (messages != null) {
+                for (Object message : messages) {
+                    zcWriteQueue.add(message);
+                    ((ByteBuf) message).retain();
+                }
+            }
+            zcWriteQueue.add(ZC_BATCH_MARKER);
         }
     }
 }

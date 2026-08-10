@@ -30,6 +30,8 @@ import io.netty.channel.FileRegion;
 import io.netty.channel.IoRegistration;
 import io.netty.channel.socket.DuplexChannel;
 import io.netty.channel.unix.IovArray;
+import io.netty.util.ReferenceCountUtil;
+import io.netty.util.ReferenceCounted;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -38,6 +40,8 @@ import java.io.IOException;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.WritableByteChannel;
+import java.util.ArrayList;
+import java.util.List;
 
 import static io.netty.channel.unix.Errors.ioResult;
 
@@ -110,6 +114,7 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
 
     @Override
     protected final void doShutdownOutput() throws Exception {
+        ((IoUringStreamUnsafe) unsafe()).recordInflightMessage();
         socket.shutdown(false, true);
     }
 
@@ -259,6 +264,79 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
 
         // Chunk buffer for generic FileRegion writes. Non-null while a send is in flight.
         private ByteBuf fileRegionChunkBuf;
+        // The messages referenced by the in-flight write SQE(s): a single message for
+        // scheduleWriteSingle(...) or the messages of a writev / sendmsg_zc batch. Reused across
+        // submissions and refreshed on every submission, so it never holds a stale reference to an
+        // already released message.
+        protected List<Object> inflightWriteMessages;
+        // Number of outstanding retains taken on inflightWriteMessages by recordInflightMessage()
+        // and retainTfoInitialData(). Each terminal completion releases exactly one retain.
+        private int inflightWriteMessageRetainCount;
+
+        /**
+         * Called by {@link #doShutdownOutput()} before the outbound buffer is closed. Retains the
+         * messages that are still referenced by the in-flight write SQE so the kernel never reads
+         * freed memory. If no write is in flight, releases a generic FileRegion chunk buffer that
+         * is waiting on POLLOUT and can never be re-submitted after the shutdown.
+         */
+        protected void recordInflightMessage() {
+            if (writeId == 0) {
+                releaseFileRegionChunkBuf();
+                return;
+            }
+            List<Object> messages = inflightWriteMessages;
+            if (messages != null) {
+                for (Object message : messages) {
+                    ReferenceCountUtil.retain(message);
+                }
+                inflightWriteMessageRetainCount++;
+            }
+        }
+
+        /**
+         * Releases exactly one of the retains taken by {@link #recordInflightMessage()} or
+         * {@link #retainTfoInitialData(ReferenceCounted)}.
+         */
+        protected void releaseInflightWriteMessage() {
+            if (inflightWriteMessageRetainCount == 0) {
+                return;
+            }
+            inflightWriteMessageRetainCount--;
+            List<Object> messages = inflightWriteMessages;
+            if (messages != null) {
+                for (Object message : messages) {
+                    ReferenceCountUtil.release(message);
+                }
+            }
+        }
+
+        protected final void setInflightWriteMessage(Object msg) {
+            if (inflightWriteMessages == null) {
+                inflightWriteMessages = new ArrayList<>(1);
+            }
+            inflightWriteMessages.clear();
+            inflightWriteMessages.add(msg);
+        }
+
+        protected final IovArrayReferenceCollector newIovArrayReferenceCollector(IovArray iovArray) {
+            if (inflightWriteMessages == null) {
+                inflightWriteMessages = new ArrayList<>(8);
+            }
+            inflightWriteMessages.clear();
+            return new IovArrayReferenceCollector(iovArray, inflightWriteMessages);
+        }
+
+        @Override
+        protected void retainTfoInitialData(ReferenceCounted initialData) {
+            setInflightWriteMessage(initialData);
+            initialData.retain();
+            inflightWriteMessageRetainCount++;
+        }
+
+        @Override
+        protected void releaseTfoInitialData() {
+            releaseInflightWriteMessage();
+        }
 
         @Override
         protected int scheduleWriteMultiple(ChannelOutboundBuffer in) {
@@ -270,8 +348,9 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
             IovArray iovArray = handler.iovArray();
             int offset = iovArray.count();
 
+            IovArrayReferenceCollector collector = newIovArrayReferenceCollector(iovArray);
             try {
-                in.forEachFlushedMessage(filterWriteMultiple(iovArray));
+                in.forEachFlushedMessage(filterWriteMultiple(collector));
             } catch (Exception e) {
                 // This should never happen, anyway fallback to single write.
                 return scheduleWriteSingle(in.current());
@@ -290,8 +369,8 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
             return 1;
         }
 
-        protected ChannelOutboundBuffer.MessageProcessor filterWriteMultiple(IovArray iovArray) {
-           return iovArray;
+        protected ChannelOutboundBuffer.MessageProcessor filterWriteMultiple(IovArrayReferenceCollector collector) {
+           return collector;
         }
 
         @Override
@@ -326,6 +405,7 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
             if (writeId == 0) {
                 return 0;
             }
+            setInflightWriteMessage(msg);
             return 1;
         }
 
@@ -383,6 +463,9 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
                 // mirroring the plain ByteBuf path above.
                 return 0;
             }
+            // The chunk buffer is not tracked through the outbound buffer, so it does not need to
+            // be retained by recordInflightMessage() at shutdown: failFlushed() never releases it,
+            // and writeComplete0() releases it once the completion (or the shutdown) arrives.
             return 1;
         }
 
@@ -677,6 +760,16 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
                 writeOpCode = 0;
             }
             ChannelOutboundBuffer channelOutboundBuffer = unsafe().outboundBuffer();
+            if (channelOutboundBuffer == null) {
+                // shutdownOutput() already dropped the outbound buffer. The messages referenced by
+                // the completed SQE were retained by recordInflightMessage() before the buffer was
+                // closed, so release them now that the kernel is done with the memory. The chunk
+                // buffer of a generic FileRegion write is owned by this Unsafe and released here
+                // as well.
+                releaseInflightWriteMessage();
+                releaseFileRegionChunkBuf();
+                return true;
+            }
             Object current = channelOutboundBuffer.current();
             if (current instanceof IoUringFileRegion) {
                 IoUringFileRegion fileRegion = (IoUringFileRegion) current;
@@ -758,6 +851,34 @@ abstract class AbstractIoUringStreamChannel extends AbstractIoUringChannel imple
             super.unregistered();
             assert readBuffer == null;
             releaseFileRegionChunkBuf();
+            releaseInflightWriteMessage();
+        }
+    }
+
+    /**
+     * Collects the messages that are actually referenced by the writev / sendmsg_zc SQE that is
+     * built from an {@link IovArray}. A message is added even if it was only partially added to
+     * the {@link IovArray} (e.g. a {@link io.netty.buffer.CompositeByteBuf} that did not fully
+     * fit), because the SQE still references a part of its memory and so it must be kept alive
+     * until the completion arrives.
+     */
+    static final class IovArrayReferenceCollector implements ChannelOutboundBuffer.MessageProcessor {
+        private final IovArray iovArray;
+        private final List<Object> references;
+
+        IovArrayReferenceCollector(IovArray iovArray, List<Object> references) {
+            this.iovArray = iovArray;
+            this.references = references;
+        }
+
+        @Override
+        public boolean processMessage(Object msg) throws Exception {
+            int previousCount = iovArray.count();
+            boolean processed = iovArray.processMessage(msg);
+            if (iovArray.count() != previousCount) {
+                references.add(msg);
+            }
+            return processed;
         }
     }
 

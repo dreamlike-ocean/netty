@@ -33,6 +33,7 @@ import io.netty.channel.unix.Errors;
 import io.netty.channel.unix.Errors.NativeIoException;
 import io.netty.channel.unix.SegmentedDatagramPacket;
 import io.netty.channel.unix.Socket;
+import io.netty.util.ReferenceCountUtil;
 import io.netty.util.UncheckedBooleanSupplier;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.StringUtil;
@@ -48,6 +49,10 @@ import java.net.NetworkInterface;
 import java.net.PortUnreachableException;
 import java.net.SocketAddress;
 import java.nio.channels.UnresolvedAddressException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static io.netty.channel.unix.Errors.ioResult;
 
@@ -379,10 +384,63 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
         connected = false;
     }
 
+    @Override
+    protected final void doShutdownOutput() throws Exception {
+        // shutdownOutput() may be triggered by handleWriteError(...) which closes the outbound
+        // buffer synchronously while sendmsg SQEs are still in flight. Retain the messages these
+        // reference so the kernel never reads freed memory. We do not shutdown the socket itself
+        // as there is no "output shutdown" for datagram sockets.
+        ((IoUringDatagramChannelUnsafe) unsafe()).recordInflightMessage();
+    }
+
     private final class IoUringDatagramChannelUnsafe extends AbstractUringUnsafe {
         private final WriteProcessor writeProcessor = new WriteProcessor();
 
         private ByteBuf readBuffer;
+
+        // The messages referenced by the in-flight sendmsg SQE(s), keyed by the MsgHdrMemoryArray
+        // index that was submitted as the SQE's user_data. Each entry is removed as soon as the
+        // corresponding completion arrives, so this only ever holds messages the kernel still
+        // references (and that are therefore still alive).
+        private final Map<Short, Object> inflightWriteMessages = new HashMap<>();
+        // Snapshot of inflightWriteMessages taken when shutdownOutput() was issued, retained until
+        // the whole batch of completions was processed.
+        private List<Object> retainedInflightWriteMessages;
+        private boolean inflightWriteMessageRetained;
+
+        /**
+         * Called by {@link #doShutdownOutput()} before the outbound buffer is closed. Retains the
+         * messages that are still referenced by the in-flight sendmsg SQE(s) so the kernel never
+         * reads freed memory.
+         */
+        protected void recordInflightMessage() {
+            if (inflightWriteMessages.isEmpty()) {
+                return;
+            }
+            retainedInflightWriteMessages = new ArrayList<>(inflightWriteMessages.values());
+            for (Object message : retainedInflightWriteMessages) {
+                ReferenceCountUtil.retain(message);
+            }
+            inflightWriteMessageRetained = true;
+        }
+
+        /**
+         * Releases the retains taken by {@link #recordInflightMessage()} once the whole batch of
+         * in-flight sendmsg operations completed.
+         */
+        protected void releaseInflightWriteMessage() {
+            if (!inflightWriteMessageRetained) {
+                return;
+            }
+            inflightWriteMessageRetained = false;
+            List<Object> messages = retainedInflightWriteMessages;
+            retainedInflightWriteMessages = null;
+            if (messages != null) {
+                for (Object message : messages) {
+                    ReferenceCountUtil.release(message);
+                }
+            }
+        }
 
         private final class WriteProcessor implements ChannelOutboundBuffer.MessageProcessor {
             private int written;
@@ -539,17 +597,23 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
 
         @Override
         boolean writeComplete0(byte op, int res, int flags, short data, int outstanding) {
-            ChannelOutboundBuffer outboundBuffer = outboundBuffer();
-
             // Reset the id as this write was completed and so don't need to be cancelled later.
             sendmsgHdrs.setId(data, MsgHdrMemoryArray.NO_ID);
             sendmsgResArray[data] = res;
+            inflightWriteMessages.remove(data);
             // Store the result so we can handle it as soon as we have no outstanding writes anymore.
             if (outstanding == 0) {
                 // All writes are done as part of a batch. Let's remove these from the ChannelOutboundBuffer
+                releaseInflightWriteMessage();
                 boolean writtenSomething = false;
                 int numWritten = sendmsgHdrs.length();
                 sendmsgHdrs.clear();
+                ChannelOutboundBuffer outboundBuffer = outboundBuffer();
+                if (outboundBuffer == null) {
+                    // The completion may arrive after shutdownOutput() already dropped the outbound
+                    // buffer, in which case there is nothing left to remove.
+                    return true;
+                }
                 for (int i = 0; i < numWritten; i++) {
                     writtenSomething |= removeFromOutboundBuffer(
                             outboundBuffer, sendmsgResArray[i], "io_uring sendmsg");
@@ -616,10 +680,10 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
             }
 
             long bufferAddress = IoUring.memoryAddress(data) + data.readerIndex();
-            return scheduleSendmsg(remoteAddress, bufferAddress, data.readableBytes(), segmentSize, first);
+            return scheduleSendmsg(data, remoteAddress, bufferAddress, data.readableBytes(), segmentSize, first);
         }
 
-        private boolean scheduleSendmsg(InetSocketAddress remoteAddress, long bufferAddress,
+        private boolean scheduleSendmsg(ByteBuf data, InetSocketAddress remoteAddress, long bufferAddress,
                                         int bufferLength, int segmentSize, boolean first) {
             MsgHdrMemory hdr = sendmsgHdrs.nextHdr();
             if (hdr == null) {
@@ -640,12 +704,14 @@ public final class IoUringDatagramChannel extends AbstractIoUringChannel impleme
                 return false;
             }
             sendmsgHdrs.setId(hdr.idx(), id);
+            inflightWriteMessages.put(hdr.idx(), data);
             return true;
         }
 
         @Override
         public void unregistered() {
             super.unregistered();
+            releaseInflightWriteMessage();
             sendmsgHdrs.release();
             recvmsgHdrs.release();
             assert readBuffer == null;

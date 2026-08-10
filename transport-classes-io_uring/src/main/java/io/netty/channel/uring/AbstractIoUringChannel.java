@@ -46,6 +46,7 @@ import io.netty.channel.unix.IovArray;
 import io.netty.channel.unix.UnixChannel;
 import io.netty.channel.unix.UnixChannelUtil;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.ReferenceCounted;
 import io.netty.util.concurrent.PromiseNotifier;
 import io.netty.util.internal.CleanableDirectBuffer;
 import io.netty.util.internal.StringUtil;
@@ -978,7 +979,13 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
                 freeMsgHdrArray();
                 if (res > 0) {
                     // Connect complete!
-                    outboundBuffer().removeBytes(res);
+                    ChannelOutboundBuffer channelOutboundBuffer = outboundBuffer();
+                    if (channelOutboundBuffer != null) {
+                        // The completion may arrive after shutdownOutput() already dropped the outbound
+                        // buffer, in which case there is nothing left to remove.
+                        channelOutboundBuffer.removeBytes(res);
+                    }
+                    releaseTfoInitialData();
 
                     // Explicit pass in 0 as this is returned by a connect(...) call when it was successful.
                     connectComplete(op, 0, flags, data);
@@ -987,9 +994,11 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
                     // In this case, our TCP connection will be established normally, but no data was transmitted at
                     // this time. We'll just transmit the data with normal writes later.
                     // Let's submit a normal connect.
+                    releaseTfoInitialData();
                     submitConnect((InetSocketAddress) requestedRemoteAddress);
                 } else {
                     // There was an error, handle it as a normal connect error.
+                    releaseTfoInitialData();
                     connectComplete(op, res, flags, data);
                 }
                 return;
@@ -1028,6 +1037,25 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
          * @param outstanding   the outstanding write completions.
          */
         abstract boolean writeComplete0(byte op, int res, int flags, short data, int outstanding);
+
+        /**
+         * Retains the initial data buffer of a TFO connect sendmsg until the sendmsg completes, so
+         * the buffer stays alive even if shutdownOutput() closes the outbound buffer in the
+         * meantime.
+         *
+         * NOOP by default as only stream channels submit TFO sendmsg operations.
+         */
+        protected void retainTfoInitialData(ReferenceCounted initialData) {
+            // NOOP
+        }
+
+        /**
+         * Releases the reference retained by {@link #retainTfoInitialData(ReferenceCounted)} once
+         * the TFO sendmsg completed or failed.
+         */
+        protected void releaseTfoInitialData() {
+            // NOOP
+        }
 
         /**
          * Called once a cancel was completed.
@@ -1140,6 +1168,10 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
                         if (connectId == 0) {
                             // Directly release the memory if submitting failed.
                             freeMsgHdrArray();
+                        } else {
+                            // Keep the initial data alive until the sendmsg completes, even if
+                            // shutdownOutput() closes the outbound buffer in the meantime.
+                            retainTfoInitialData(initialData);
                         }
                     } else {
                         submitConnect(inetSocketAddress);

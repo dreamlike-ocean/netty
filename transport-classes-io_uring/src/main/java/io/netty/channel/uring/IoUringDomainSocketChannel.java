@@ -142,6 +142,7 @@ public final class IoUringDomainSocketChannel extends AbstractIoUringStreamChann
                     memory.release();
                     return 0;
                 }
+                setInflightWriteMessage(msg);
                 return 1;
             }
             return super.scheduleWriteSingle(msg);
@@ -159,6 +160,12 @@ public final class IoUringDomainSocketChannel extends AbstractIoUringStreamChann
                     int nativeCallResult = res >= 0 ? res : Errors.ioResult("io_uring sendmsg", res);
                     if (nativeCallResult >= 0) {
                         ChannelOutboundBuffer channelOutboundBuffer = unsafe().outboundBuffer();
+                        if (channelOutboundBuffer == null) {
+                            // The completion may arrive after shutdownOutput() already dropped the
+                            // outbound buffer, in which case there is nothing left to remove.
+                            releaseInflightWriteMessage();
+                            return true;
+                        }
                         channelOutboundBuffer.remove();
                     }
                 } catch (Throwable throwable) {
