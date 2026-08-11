@@ -25,8 +25,7 @@ import io.netty.channel.unix.IovArray;
 
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.util.ArrayDeque;
-import java.util.Queue;
+import java.util.List;
 
 import static io.netty.channel.unix.Errors.ioResult;
 
@@ -73,14 +72,11 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
         return new IoUringSocketUnsafe();
     }
 
-    // Marker object that is used to mark a batch of buffers that were used with zero-copy write operations.
-    private static final Object ZC_BATCH_MARKER = new Object();
-
     private final class IoUringSocketUnsafe extends IoUringStreamUnsafe {
         /**
-         * Queue that holds buffers that we can't release yet as the kernel still holds a reference to these.
+         * Holds buffers that we can't release yet as the kernel still holds a reference to these.
          */
-        private Queue<Object> zcWriteQueue;
+        private PendingZeroCopyWrites pendingZeroCopyWrites;
 
         @Override
         protected int scheduleWriteSingle(Object msg) {
@@ -91,7 +87,8 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 int length = buf.readableBytes();
                 if (((IoUringSocketChannelConfig) config()).shouldWriteZeroCopy(length)) {
                     long address = IoUring.memoryAddress(buf) + buf.readerIndex();
-                    IoUringIoOps ops = IoUringIoOps.newSendZc(fd().intValue(), address, length, 0, nextOpsId(), 0);
+                    IoUringIoOps ops = IoUringIoOps.newSendZc(
+                            fd().intValue(), address, length, 0, nextZeroCopyUserData(), 0);
                     byte opCode = ops.opcode();
                     writeId = registration().submit(ops);
                     writeOpCode = opCode;
@@ -145,7 +142,8 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 MsgHdrMemory hdr = msgHdrArray.nextHdr();
                 assert hdr != null;
                 hdr.set(iovArrayAddress, iovArrayLength);
-                IoUringIoOps ops = IoUringIoOps.newSendmsgZc(fd().intValue(), (byte) 0, 0, hdr.address(), nextOpsId());
+                IoUringIoOps ops = IoUringIoOps.newSendmsgZc(
+                        fd().intValue(), (byte) 0, 0, hdr.address(), nextZeroCopyUserData());
                 byte opCode = ops.opcode();
                 writeId = registration().submit(ops);
                 writeOpCode = opCode;
@@ -179,17 +177,32 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
             };
         }
 
+        private long nextZeroCopyUserData() {
+            short candidate = nextOpsId();
+            PendingZeroCopyWrites pendingWrites = pendingZeroCopyWrites;
+            if (pendingWrites == null) {
+                return candidate;
+            }
+            for (int attempts = 1; pendingWrites.contains(candidate); attempts++) {
+                if (attempts == PendingZeroCopyWrites.MAX_UNSIGNED_SHORT) {
+                    return pendingWrites.nextLongUserData(candidate);
+                }
+                candidate = nextOpsId();
+            }
+            return candidate;
+        }
+
         @Override
-        boolean writeComplete0(byte op, int res, int flags, short data, int outstanding) {
+        boolean writeComplete0(byte op, int res, int flags, long data, int outstanding) {
             ChannelOutboundBuffer channelOutboundBuffer = unsafe().outboundBuffer();
             if (op == Native.IORING_OP_SEND_ZC || op == Native.IORING_OP_SENDMSG_ZC) {
-                return handleWriteCompleteZeroCopy(op, channelOutboundBuffer, res, flags);
+                return handleWriteCompleteZeroCopy(op, channelOutboundBuffer, res, flags, data);
             }
             return super.writeComplete0(op, res, flags, data, outstanding);
         }
 
         private boolean handleWriteCompleteZeroCopy(byte op, ChannelOutboundBuffer channelOutboundBuffer,
-                                                    int res, int flags) {
+                                                    int res, int flags, long userData) {
             if ((flags & Native.IORING_CQE_F_NOTIF) == 0) {
                 // We only want to reset these if IORING_CQE_F_NOTIF is not set.
                 // If it's set we know this is only an extra notification for a write but we already handled
@@ -199,14 +212,17 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 writeOpCode = 0;
 
                 boolean more = (flags & Native.IORING_CQE_F_MORE) != 0;
+                List<ByteBuf> pendingBuffers = null;
                 if (more) {
-                    // This is the result of send_sz or sendmsg_sc but there will also be another notification
-                    // which will let us know that we can release the buffer(s). In this case let's retain the
-                    // buffer(s) once and store it in an internal queue. Once we receive the notification we will
-                    // call release() on the buffer(s) as it's not used by the kernel anymore.
-                    if (zcWriteQueue == null) {
-                        zcWriteQueue = new ArrayDeque<>(8);
+                    // There will also be another notification which will let us know that we can release the
+                    // buffers. Associate these with the operation's userData as notifications for different
+                    // operations don't need to be delivered in submission order.
+                    PendingZeroCopyWrites pendingWrites = pendingZeroCopyWrites;
+                    if (pendingWrites == null) {
+                        pendingWrites = new PendingZeroCopyWrites();
+                        pendingZeroCopyWrites = pendingWrites;
                     }
+                    pendingBuffers = pendingWrites.register(userData);
                 }
                 if (res >= 0) {
                     if (more) {
@@ -216,7 +232,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                         do {
                             ByteBuf currentBuffer = (ByteBuf) channelOutboundBuffer.current();
                             assert currentBuffer != null;
-                            zcWriteQueue.add(currentBuffer);
+                            pendingBuffers.add(currentBuffer);
                             currentBuffer.retain();
                             int readable = currentBuffer.readableBytes();
                             int skip = Math.min(readable, res);
@@ -228,8 +244,6 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                             }
                             res -= readable;
                         } while (res > 0);
-                        // Add the marker so we know when we need to stop releasing
-                        zcWriteQueue.add(ZC_BATCH_MARKER);
                     } else {
                         // We don't expect any extra notification, just directly let the buffer be released.
                         channelOutboundBuffer.removeBytes(res);
@@ -237,12 +251,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                     return true;
                 } else {
                     if (res == Native.ERRNO_ECANCELED_NEGATIVE) {
-                        if (more) {
-                            // The send was cancelled but we expect another notification. Just add the marker to the
-                            // queue so we don't get into trouble once the final notification for this operation is
-                            // received.
-                            zcWriteQueue.add(ZC_BATCH_MARKER);
-                        }
+                        // If more is set, the empty pending batch is kept until its notification arrives.
                         return true;
                     }
                     try {
@@ -252,7 +261,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                             try {
                                 // We expect another notification so we need to ensure we retain these buffers
                                 // so we can release these once we see IORING_CQE_F_NOTIF set.
-                                addFlushedToZcWriteQueue(channelOutboundBuffer);
+                                addFlushedToPendingZeroCopyWrite(channelOutboundBuffer, pendingBuffers);
                             } catch (Exception e) {
                                 // should never happen but let's handle it anyway.
                                 handleWriteError(e);
@@ -267,7 +276,7 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                                 // We expect another notification as handleWriteError(...) will fail all flushed writes
                                 // and also release any buffers we need to ensure we retain these buffers
                                 // so we can release these once we see IORING_CQE_F_NOTIF set.
-                                addFlushedToZcWriteQueue(channelOutboundBuffer);
+                                addFlushedToPendingZeroCopyWrite(channelOutboundBuffer, pendingBuffers);
                             } catch (Exception e) {
                                 // should never happen but let's handle it anyway.
                                 cause.addSuppressed(e);
@@ -277,38 +286,27 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                     }
                 }
             } else {
-                if (zcWriteQueue != null) {
-                    for (;;) {
-                        Object queued = zcWriteQueue.remove();
-                        assert queued != null;
-                        if (queued == ZC_BATCH_MARKER) {
-                            // Done releasing the buffers of the zero-copy batch.
-                            break;
-                        }
-                        // The buffer can now be released.
-                        ((ByteBuf) queued).release();
-                    }
+                PendingZeroCopyWrites pendingWrites = pendingZeroCopyWrites;
+                if (pendingWrites != null) {
+                    pendingWrites.release(userData);
                 }
             }
             return true;
         }
 
-        private void addFlushedToZcWriteQueue(ChannelOutboundBuffer channelOutboundBuffer) throws Exception {
+        private void addFlushedToPendingZeroCopyWrite(ChannelOutboundBuffer channelOutboundBuffer,
+                                                       List<ByteBuf> pendingBuffers) throws Exception {
             // We expect another notification as handleWriteError(...) will fail all flushed writes
             // and also release any buffers we need to ensure we retain these buffers
             // so we can release these once we see IORING_CQE_F_NOTIF set.
-            try {
-                channelOutboundBuffer.forEachFlushedMessage(m -> {
-                    if (!(m instanceof ByteBuf)) {
-                        return false;
-                    }
-                    zcWriteQueue.add(m);
-                    ((ByteBuf) m).retain();
-                    return true;
-                });
-            } finally {
-                zcWriteQueue.add(ZC_BATCH_MARKER);
-            }
+            channelOutboundBuffer.forEachFlushedMessage(m -> {
+                if (!(m instanceof ByteBuf)) {
+                    return false;
+                }
+                pendingBuffers.add((ByteBuf) m);
+                ((ByteBuf) m).retain();
+                return true;
+            });
         }
     }
 }

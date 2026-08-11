@@ -440,13 +440,13 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
 
         /**
          * Schedule the write of multiple messages in the {@link ChannelOutboundBuffer} and returns the number of
-         * {@link #writeComplete(byte, int, int, short)} calls that are expected because of the scheduled write.
+         * {@link #writeComplete(byte, int, int, long)} calls that are expected because of the scheduled write.
          */
         protected abstract int scheduleWriteMultiple(ChannelOutboundBuffer in);
 
         /**
          * Schedule the write of a single message and returns the number of
-         * {@link #writeComplete(byte, int, int, short)} calls that are expected because of the scheduled write.
+         * {@link #writeComplete(byte, int, int, long)} calls that are expected because of the scheduled write.
          */
         protected abstract int scheduleWriteSingle(Object msg);
 
@@ -471,7 +471,7 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
                 case Native.IORING_OP_SPLICE:
                 case Native.IORING_OP_SEND_ZC:
                 case Native.IORING_OP_SENDMSG_ZC:
-                    writeComplete(op, res, flags, data);
+                    writeComplete(op, res, flags, event.userData());
                     break;
                 case Native.IORING_OP_POLL_ADD:
                     pollAddComplete(res, flags, data);
@@ -971,7 +971,7 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
          * @param flags the flags.
          * @param data  the data that was passed when submitting the op.
          */
-        private void writeComplete(byte op, int res, int flags, short data) {
+        private void writeComplete(byte op, int res, int flags, long data) {
             if ((ioState & CONNECT_SCHEDULED) != 0) {
                 // The writeComplete(...) callback was called because of a sendmsg(...) result that was used for
                 // TCP_FASTOPEN_CONNECT.
@@ -981,7 +981,7 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
                     outboundBuffer().removeBytes(res);
 
                     // Explicit pass in 0 as this is returned by a connect(...) call when it was successful.
-                    connectComplete(op, 0, flags, data);
+                    connectComplete(op, 0, flags, (short) data);
                 } else if (res == ERRNO_EINPROGRESS_NEGATIVE || res == 0) {
                     // This happens when we (as a client) have no pre-existing cookie for doing a fast-open connection.
                     // In this case, our TCP connection will be established normally, but no data was transmitted at
@@ -990,7 +990,7 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
                     submitConnect((InetSocketAddress) requestedRemoteAddress);
                 } else {
                     // There was an error, handle it as a normal connect error.
-                    connectComplete(op, res, flags, data);
+                    connectComplete(op, res, flags, (short) data);
                 }
                 return;
             }
@@ -1027,6 +1027,10 @@ abstract class AbstractIoUringChannel extends AbstractChannel implements UnixCha
          * @param data          the data that was passed when submitting the op.
          * @param outstanding   the outstanding write completions.
          */
+        boolean writeComplete0(byte op, int res, int flags, long data, int outstanding) {
+            return writeComplete0(op, res, flags, (short) data, outstanding);
+        }
+
         abstract boolean writeComplete0(byte op, int res, int flags, short data, int outstanding);
 
         /**
