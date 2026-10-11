@@ -240,6 +240,7 @@ final class Native {
     static final short IORING_RECVSEND_POLL_FIRST = 1 << 0;
     static final short IORING_RECVSEND_BUNDLE = 1 << 4;
     static final short IORING_RECV_MULTISHOT = 1 << 1;
+    static final short IORING_RECVSEND_FIXED_BUF = 1 << 2;
     static final short IORING_SEND_ZC_REPORT_USAGE = 1 << 3;
 
     static final int IORING_NOTIF_USAGE_ZC_COPIED = 1 << 31;
@@ -619,6 +620,7 @@ final class Native {
     static native int ioUringRegisterIoWqMaxWorkers(int ringFd, int maxBoundedValue, int maxUnboundedValue);
     static native int ioUringRegisterEnableRings(int ringFd);
     static native int ioUringRegisterRingFds(int ringFds);
+    static native int ioUringRegisterBuffer(int ringFd, long address, long length);
 
     static native long ioUringRegisterBufRing(int ringFd, int entries, short bufferGroup, int flags);
     static native int ioUringUnRegisterBufRing(int ringFd, long ioUringBufRingAddr, int entries, short bufferGroupId);
