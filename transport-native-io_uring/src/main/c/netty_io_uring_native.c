@@ -435,6 +435,19 @@ static jint netty_io_uring_register_enable_rings(JNIEnv *env, jclass clazz, jint
      return sys_io_uring_register(ringFd, IORING_REGISTER_ENABLE_RINGS, NULL, 0);
 }
 
+// Registers one fixed buffer (buf_index 0) covering [address, address + length).
+// See https://man7.org/linux/man-pages/man3/io_uring_register_buffers.3.html
+static jint netty_io_uring_register_buffer(JNIEnv *env, jclass clazz, jint ringFd, jlong address, jlong length) {
+    struct iovec iov = {
+        .iov_base = (void *) (intptr_t) address,
+        .iov_len = (size_t) length,
+    };
+    if (sys_io_uring_register(ringFd, IORING_REGISTER_BUFFERS, &iov, 1) < 0) {
+        return -errno;
+    }
+    return 0;
+}
+
 static jint netty_io_uring_register_ring_fds(JNIEnv *env, jclass clazz, jint ringFd) {
     struct io_uring_rsrc_update up = {
         .data = ringFd,
@@ -884,6 +897,7 @@ static const JNINativeMethod method_table[] = {
     {"ioUringRegisterIoWqMaxWorkers","(III)I", (void*) netty_io_uring_register_iowq_max_workers },
     {"ioUringRegisterEnableRings","(I)I", (void*) netty_io_uring_register_enable_rings },
     {"ioUringRegisterRingFds","(I)I", (void*) netty_io_uring_register_ring_fds },
+    {"ioUringRegisterBuffer","(IJJ)I", (void*) netty_io_uring_register_buffer },
     {"ioUringProbe0", "(I)[I", (void *) netty_io_uring_probe0},
     {"ioUringExit", "(JIJIJIII)V", (void *) netty_io_uring_ring_buffer_exit},
     {"createFile", "(Ljava/lang/String;)I", (void *) netty_create_file},
