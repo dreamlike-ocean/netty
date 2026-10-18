@@ -25,6 +25,7 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.SocketChannelConfig;
 import io.netty.channel.unix.IovArray;
 import io.netty.util.ReferenceCounted;
+import io.netty.util.internal.SystemPropertyUtil;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -282,6 +283,9 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
      * </pre>
      */
     private static final class ZeroCopyBatch implements ChannelOutboundBuffer.MessageProcessor {
+        private static final int MERGED_MAX_SIZE = Math.min(16 * 1024 * 1024,
+                Math.max(1, SystemPropertyUtil.getInt("io.netty.iouring.zeroCopyMergedMaxSize", 64 * 1024)));
+
         // The messages that are sent from their own memory, these are not retained yet.
         private final List<ByteBuf> largeBuffers = new ArrayList<>(4);
         // Holds the bytes of the small messages, the batch owns the reference it was allocated with.
@@ -326,7 +330,8 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 throws Exception {
             iovArray.truncate(offset);
             if (smallBytes != 0) {
-                int capacity = (int) Math.min(smallBytes, Integer.MAX_VALUE);
+                // At least the threshold, so the first small buffer always fits. What does not fit is written later.
+                int capacity = (int) Math.min(smallBytes, Math.max(MERGED_MAX_SIZE, threshold));
                 merged = allocator.directBuffer(capacity, capacity);
                 runStart = 0;
             }
@@ -382,15 +387,19 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 merged.writeBytes(buf, index, length);
                 return true;
             }
-            if (!addMergedSmallBuffers() || !iovArray.add(buf, index, length)) {
+            if (!addMergedSmallBuffers()) {
                 return false;
             }
-            // A message that consists of CompositeByteBuf has one reference count for
-            // all of them, and its buffers are added one after another. So it is enough to track it once.
-            if (largeBuffers.isEmpty() || largeBuffers.get(largeBuffers.size() - 1) != buf) {
+            int count = iovArray.count();
+            boolean added = iovArray.add(buf, index, length);
+            // IovArray.add(...) may return false although the entry was added, so check the count.
+            if (iovArray.count() != count
+                    && (largeBuffers.isEmpty() || largeBuffers.get(largeBuffers.size() - 1) != buf)) {
+                // A message that consists of CompositeByteBuf has one reference count for
+                // all of them, and its buffers are added one after another. So it is enough to track it once.
                 largeBuffers.add(buf);
             }
-            return true;
+            return added;
         }
 
         private boolean addMergedSmallBuffers() {
