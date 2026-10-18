@@ -283,7 +283,8 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
      * </pre>
      */
     private static final class ZeroCopyBatch implements ChannelOutboundBuffer.MessageProcessor {
-        private static final int MERGED_MAX_SIZE = Math.min(16 * 1024 * 1024,
+        // The pooled allocator pools up to 4MiB, the adaptive allocator only up to 1MiB.
+        private static final int MERGED_MAX_SIZE = Math.min(4 * 1024 * 1024,
                 Math.max(1, SystemPropertyUtil.getInt("io.netty.iouring.zeroCopyMergedMaxSize", 64 * 1024)));
 
         // The messages that are sent from their own memory, these are not retained yet.
@@ -330,8 +331,8 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 throws Exception {
             iovArray.truncate(offset);
             if (smallBytes != 0) {
-                // At least the threshold, so the first small buffer always fits. What does not fit is written later.
-                int capacity = (int) Math.min(smallBytes, Math.max(MERGED_MAX_SIZE, threshold));
+                // What does not fit is written later.
+                int capacity = (int) Math.min(smallBytes, MERGED_MAX_SIZE);
                 merged = allocator.directBuffer(capacity, capacity);
                 runStart = 0;
             }
@@ -380,12 +381,13 @@ public final class IoUringSocketChannel extends AbstractIoUringStreamChannel imp
                 if (length == 0) {
                     return true;
                 }
-                // only Big ByteBuf
-                if (merged == null || length > merged.writableBytes()) {
+                if (merged == null) {
                     return false;
                 }
-                merged.writeBytes(buf, index, length);
-                return true;
+                // Copy what fits, the rest of the buffer is written later.
+                int copied = Math.min(length, merged.writableBytes());
+                merged.writeBytes(buf, index, copied);
+                return copied == length;
             }
             if (!addMergedSmallBuffers()) {
                 return false;
