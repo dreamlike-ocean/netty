@@ -28,6 +28,7 @@ import io.netty.handler.codec.http2.Http2Exception.CompositeStreamException;
 import io.netty.handler.codec.http2.Http2Exception.StreamException;
 import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.Future;
+import io.netty.util.concurrent.PromiseNotifier;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -455,6 +456,15 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
         encoder.flowController().channelHandlerContext(ctx);
         decoder.flowController().channelHandlerContext(ctx);
         byteDecoder = new PrefaceDecoder(ctx);
+        // Streams are not only closed via closeStream(...): the connection also closes them itself, for example
+        // when a GOAWAY is received or the channel becomes inactive. Check if a pending graceful shutdown can
+        // complete whenever a stream is closed, whatever the reason.
+        connection().addListener(new Http2ConnectionAdapter() {
+            @Override
+            public void onStreamClosed(Http2Stream stream) {
+                checkCloseConnection(ctx.newSucceededFuture());
+            }
+        });
     }
 
     @Override
@@ -1046,7 +1056,9 @@ public class Http2ConnectionHandler extends ByteToMessageDecoder implements Http
             if (promise == null) {
                 ctx.close();
             } else {
-                ctx.close(promise);
+                // The original promise may be completed while we waited for the active streams, so don't pass it to
+                // close(...). Notify it without failing if it's already done; a cancellation still prevents the close.
+                ctx.close(PromiseNotifier.cascade(false, ctx.newPromise(), promise));
             }
         }
     }

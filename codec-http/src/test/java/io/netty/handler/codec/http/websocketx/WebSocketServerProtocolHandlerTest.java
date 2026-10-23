@@ -23,6 +23,7 @@ import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.embedded.EmbeddedChannel;
 
+import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.DefaultHttpContent;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.HttpClientCodec;
@@ -44,6 +45,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
 import java.util.Queue;
+import java.util.concurrent.TimeUnit;
 
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.*;
@@ -456,6 +458,161 @@ public class WebSocketServerProtocolHandlerTest {
 
         assertFalse(client.finishAndReleaseAll());
         assertFalse(server.finishAndReleaseAll());
+    }
+
+    @Test
+    public void testForceCloseTimeoutAppliedToInboundCloseFrame() throws Exception {
+        final long forceCloseTimeoutMillis = 100;
+        final Queue<ChannelPromise> stalledWrites = new ArrayDeque<ChannelPromise>();
+        EmbeddedChannel client = createClient();
+        EmbeddedChannel server = createStallingServer(forceCloseTimeoutMillis, stalledWrites);
+
+        assertFalse(server.writeInbound(client.<ByteBuf>readOutbound()));
+        assertFalse(client.writeInbound(server.<ByteBuf>readOutbound()));
+
+        // The peer initiates the close handshake.
+        assertTrue(client.writeOutbound(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE)));
+        assertFalse(server.writeInbound(client.<ByteBuf>readOutbound()));
+
+        // The server's echo write is stalled, simulating a peer that stopped draining its socket
+        // receive buffer. The channel must not stay open indefinitely waiting on that write.
+        assertEquals(1, stalledWrites.size());
+        assertTrue(server.isOpen());
+
+        server.advanceTimeBy(forceCloseTimeoutMillis * 2, TimeUnit.MILLISECONDS);
+        server.runScheduledPendingTasks();
+
+        assertFalse(server.isOpen());
+
+        client.close();
+        assertFalse(client.finishAndReleaseAll());
+        assertFalse(server.finishAndReleaseAll());
+    }
+
+    @Test
+    public void testSimultaneousCloseDoesNotLeakOriginalPromise() throws Exception {
+        // The application initiates an outbound close (e.g. via ctx.close()) while the peer's own CLOSE
+        // frame is concurrently in flight. Both paths call closeSent(): the second call must not silently
+        // overwrite (and orphan) the promise the first call already armed a deadline for.
+        final long forceCloseTimeoutMillis = 100;
+        final Queue<ChannelPromise> stalledWrites = new ArrayDeque<ChannelPromise>();
+        EmbeddedChannel client = createClient();
+        EmbeddedChannel server = createStallingServer(forceCloseTimeoutMillis, stalledWrites);
+
+        assertFalse(server.writeInbound(client.<ByteBuf>readOutbound()));
+        assertFalse(client.writeInbound(server.<ByteBuf>readOutbound()));
+
+        // The application decides to close first.
+        ChannelHandlerContext serverCtx = server.pipeline().context(WebSocketServerProtocolHandler.class);
+        ChannelPromise applicationClosePromise = serverCtx.newPromise();
+        ((WebSocketServerProtocolHandler) serverCtx.handler()).close(serverCtx, applicationClosePromise);
+
+        // Before that echo completes, the peer's own CLOSE frame arrives too.
+        assertTrue(client.writeOutbound(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE)));
+        assertFalse(server.writeInbound(client.<ByteBuf>readOutbound()));
+
+        // We already sent a close frame, so no second close frame must be written in response to the peer's
+        // one. A single deadline governs the close handshake.
+        assertEquals(1, stalledWrites.size());
+        assertTrue(server.isOpen());
+
+        server.advanceTimeBy(forceCloseTimeoutMillis * 2, TimeUnit.MILLISECONDS);
+        server.runScheduledPendingTasks();
+
+        assertFalse(server.isOpen());
+        // The application's own close promise is not left hanging forever.
+        assertTrue(applicationClosePromise.isDone());
+
+        client.close();
+        assertFalse(client.finishAndReleaseAll());
+        assertFalse(server.finishAndReleaseAll());
+    }
+
+    @Test
+    public void testServerInitiatedCloseHandshakeWithInboundCloseFrame() {
+        // Reproducer from https://github.com/netty/netty/issues/17776
+        EmbeddedChannel channel = new EmbeddedChannel(
+                new HttpServerCodec(), new HttpObjectAggregator(65536), new WebSocketServerProtocolHandler("/ws"));
+
+        FullHttpRequest request = new DefaultFullHttpRequest(HTTP_1_1, HttpMethod.GET, "/ws");
+        request.headers()
+                .set(HttpHeaderNames.HOST, "localhost")
+                .set(HttpHeaderNames.UPGRADE, HttpHeaderValues.WEBSOCKET)
+                .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.UPGRADE)
+                .set(HttpHeaderNames.SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+                .set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "13");
+        assertFalse(channel.writeInbound(request));
+        ReferenceCountUtil.release(channel.readOutbound());
+
+        assertTrue(channel.writeOutbound(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE)));
+        ReferenceCountUtil.release(channel.readOutbound());
+        assertTrue(channel.isOpen());
+
+        // The "client" responds with a close frame, which must not try to reuse the already completed
+        // closeSent promise but just close the connection.
+        assertFalse(channel.writeInbound(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE)));
+        assertFalse(channel.isOpen());
+        assertNull(channel.readOutbound());
+
+        assertFalse(channel.finishAndReleaseAll());
+    }
+
+    @Test
+    public void testServerInitiatedCloseHandshake() throws Exception {
+        EmbeddedChannel client = createClient();
+        EmbeddedChannel server = createServer();
+
+        assertFalse(server.writeInbound(client.<ByteBuf>readOutbound()));
+        assertFalse(client.writeInbound(server.<ByteBuf>readOutbound()));
+
+        // The server initiates the close handshake.
+        assertTrue(server.writeOutbound(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE)));
+        CloseWebSocketFrame closeMessage = decode(server.<ByteBuf>readOutbound(), CloseWebSocketFrame.class);
+        assertEquals(WebSocketCloseStatus.NORMAL_CLOSURE.code(), closeMessage.statusCode());
+        closeMessage.release();
+        assertTrue(server.isOpen());
+
+        // The peer responds with its own close frame, which must complete the handshake by closing the
+        // connection without sending another close frame.
+        assertTrue(client.writeOutbound(new CloseWebSocketFrame(WebSocketCloseStatus.NORMAL_CLOSURE)));
+        assertFalse(server.writeInbound(client.<ByteBuf>readOutbound()));
+        assertFalse(server.isOpen());
+        assertNull(server.readOutbound());
+
+        client.close();
+        assertFalse(client.finishAndReleaseAll());
+        assertFalse(server.finishAndReleaseAll());
+    }
+
+    private static EmbeddedChannel createStallingServer(
+            long forceCloseTimeoutMillis, final Queue<ChannelPromise> stalledWrites) throws Exception {
+        WebSocketServerProtocolConfig serverConfig = WebSocketServerProtocolConfig.newBuilder()
+                .websocketPath("/test")
+                .dropPongFrames(false)
+                .forceCloseTimeoutMillis(forceCloseTimeoutMillis)
+                .build();
+        EmbeddedChannel ch = new EmbeddedChannel(false, false,
+                new ChannelOutboundHandlerAdapter() {
+                    private boolean handshakeResponseSent;
+
+                    @Override
+                    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
+                        if (msg instanceof ByteBuf && handshakeResponseSent) {
+                            // Simulate a peer that stopped draining its socket receive buffer: the
+                            // close-frame echo write never completes on its own.
+                            ReferenceCountUtil.release(msg);
+                            stalledWrites.add(promise);
+                            return;
+                        }
+                        handshakeResponseSent = true;
+                        ctx.write(msg, promise);
+                    }
+                },
+                new HttpServerCodec(),
+                new HttpObjectAggregator(8192),
+                new WebSocketServerProtocolHandler(serverConfig));
+        ch.register();
+        return ch;
     }
 
     private EmbeddedChannel createClient(ChannelHandler... handlers) throws Exception {
